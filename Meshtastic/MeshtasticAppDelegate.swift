@@ -43,7 +43,7 @@ class MeshtasticAppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificat
 		}
 		// Request Siri authorization so intent donations work and CarPlay messaging is available.
 		#if !targetEnvironment(macCatalyst)
-		#if targetEnvironment(simulator)
+		#if targetEnvironment(simulator) || LEAN_BUILD
 		Logger.services.info("Skipping Siri authorization request in simulator benchmark harness")
 		#else
 		INPreferences.requestSiriAuthorization { status in

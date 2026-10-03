@@ -763,6 +763,16 @@ struct Settings: View {
 				}
 				.disabled(selectedNode > 0 && selectedNode != preferredNodeNum)
 
+				NavigationLink {
+					WDGWarsSettingsView()
+				} label: {
+					Label {
+						Text("WDGWars Upload")
+					} icon: {
+						Image(systemName: "icloud.and.arrow.up")
+					}
+				}
+
 				// A managed radio hides the configuration sections; say why instead of
 				// showing nothing (same message as Android).
 				if let node, node.isManaged, accessoryManager.isConnected {

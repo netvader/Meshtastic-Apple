@@ -607,7 +607,7 @@ struct DeviceOnboarding: View {
 			return
 		}
 
-		#if targetEnvironment(macCatalyst)
+		#if targetEnvironment(macCatalyst) || LEAN_BUILD
 		// Siri authorization prompt is not available on Mac Catalyst
 		Logger.services.info("Siri permissions not available on Mac Catalyst")
 		#else

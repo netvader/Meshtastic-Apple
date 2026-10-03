@@ -743,7 +743,23 @@ extension MeshPackets {
 						}
 
 						fetchedNode[0].channel = Int32(truncatingIfNeeded: packet.channel)
-						
+
+						// WDGWars auto upload: skip the connected radio itself.
+						if fetchedNode[0].myInfo == nil {
+							let hops: Int? = packet.hopStart > 0 ? Int(packet.hopStart) - Int(packet.hopLimit) : nil
+							let uploadName = fetchedNode[0].user?.longName ?? fetchedNode[0].user?.shortName
+							let uploadRole = fetchedNode[0].user?.role
+							let pos = positionMessage
+							let pkt = packet
+							Task {
+								await WDGWarsUploader.shared.record(
+									nodeNum: posNum, name: uploadName, role: uploadRole,
+									latitudeI: pos.latitudeI, longitudeI: pos.longitudeI,
+									rssi: pkt.rxRssi, snr: pkt.rxSnr, viaMqtt: pkt.viaMqtt,
+									hops: hops, time: Date())
+							}
+						}
+
 						scheduleDebouncedSave()
 						Logger.data.debug("📍 [Position] buffered for Node: \(fetchedNode[0].num.toHex(), privacy: .public)")
 					}
