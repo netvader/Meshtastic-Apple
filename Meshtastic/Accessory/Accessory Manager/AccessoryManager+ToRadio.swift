@@ -206,7 +206,11 @@ extension AccessoryManager {
 		}
 	}
 
-	public func addContactFromURL(base64UrlString: String) async throws {
+	/// - Parameter acceptsKeyReplacement: Only true when the add-contact sheet showed that this
+	///   contact's key differs from the one the node holds and the person confirmed replacing it.
+	///   The radio applies the new key either way, so without this the app would keep the old one
+	///   and show a key mismatch for a change the person asked for.
+	public func addContactFromURL(base64UrlString: String, acceptsKeyReplacement: Bool = false) async throws {
 		guard let deviceNum = self.activeConnection?.device.num else {
 			Logger.services.error("Error while sending CannedMessageModule request.  No active device.")
 			throw AccessoryError.ioFailed("No active device")
@@ -273,7 +277,8 @@ extension AccessoryManager {
 				// Update local database with the new node info
 				// Do not auto-favorite when using CLIENT_BASE role to avoid creating routing issues
 				let shouldFavorite = connectedDeviceRole != .clientBase
-				await MeshPackets.shared.upsertNodeInfoPacket(packet: nodeMeshPacket, favorite: shouldFavorite, overTheMesh: false)
+				await MeshPackets.shared.upsertNodeInfoPacket(packet: nodeMeshPacket, favorite: shouldFavorite, overTheMesh: false,
+				                                             acceptsKeyReplacement: acceptsKeyReplacement)
 			}
 		} catch {
 			// The contact decoded fine and carries a key; this is the radio send failing.
@@ -1073,6 +1078,7 @@ extension AccessoryManager {
 		lora.channelNum = 0
 		do {
 			_ = try await saveLoRaConfig(config: lora, fromUser: user, toUser: user)
+			refreshNodeDatabaseAfterLoRaChange()
 		} catch {
 			// Roll the primary channel back so we don't strand the radio between meshes. The channel
 			// write doesn't reboot, so this restore is safe.
