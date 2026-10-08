@@ -158,21 +158,6 @@ struct LoRaConfig: View {
 			request: accessoryManager.requestLoRaConfig,
 			save: { config, from, to in
 				guard let region = Self.supportedRegion(config) else { return }
-				// Read the stored settings before the save: the radio reboots on a LoRa
-				// write and echoes the new config back, so afterwards there is nothing
-				// left to compare against.
-				let previous = node?.loRaConfig.map {
-					LoRaChannelSettings(
-						regionCode: $0.regionCode, modemPreset: $0.modemPreset, usePreset: $0.usePreset,
-						channelNum: $0.channelNum, overrideFrequency: $0.overrideFrequency,
-						bandwidth: $0.bandwidth, spreadFactor: $0.spreadFactor, codingRate: $0.codingRate)
-				}
-				let updated = LoRaChannelSettings(
-					regionCode: Int32(config.region.rawValue), modemPreset: Int32(config.modemPreset.rawValue),
-					usePreset: config.usePreset, channelNum: Int32(config.channelNum),
-					overrideFrequency: config.overrideFrequency, bandwidth: Int32(config.bandwidth),
-					spreadFactor: Int32(config.spreadFactor), codingRate: Int32(config.codingRate))
-
 				if let deviceNum = accessoryManager.activeDeviceNum,
 				   let connectedNode = getNodeInfo(id: deviceNum, context: context),
 				   connectedNode.num == node?.user?.num ?? 0 {
@@ -180,13 +165,10 @@ struct LoRaConfig: View {
 				}
 
 				_ = try await accessoryManager.saveLoRaConfig(config: config, fromUser: from, toUser: to)
-
-				// Only when the radio actually moved channel, and only for a change made
-				// here. The beacon join flow writes the same config to follow a mesh it has
-				// just found, where every node is expected to be on the old channel.
-				if let previous, updated.movesOffChannel(from: previous), let targetNum = node?.user?.num {
-					LoRaConfigChange.recordChange(forNode: targetNum)
-					Logger.mesh.info("📡 LoRa settings moved node \(targetNum.toHex(), privacy: .public) to a different channel; flagging nodes not heard since")
+				// A change to the connected radio applies without a reboot on 2.8, so ask it for the
+				// node database to pick up its answers for the new settings.
+				if to.num == accessoryManager.activeDeviceNum {
+					accessoryManager.refreshNodeDatabaseAfterLoRaChange()
 				}
 				onSuccessfulSave(to.num, region)
 			})
@@ -298,6 +280,10 @@ private struct ModemPresetRow: View {
 		   let info = accessoryManager.loRaRegionPresets[code], !info.presets.isEmpty {
 			let constrained = base.filter { info.presets.contains($0.protoEnumValue()) }
 			if !constrained.isEmpty { presets = constrained }
+		} else if RegionCodes(rawValue: config.region.rawValue)?.allowsBandLimitedPresets != true {
+			// No map from the radio (it is sent with the config, which some reconnects skip).
+			// Lite, Narrow and Tiny are never legal outside their regions, so don't offer them.
+			presets = presets.filter { !$0.isBandLimited }
 		}
 		// Whatever the radio is actually set to stays visible, whether it was filtered out
 		// for being deprecated or for being Turbo in a region that forbids it. Otherwise
