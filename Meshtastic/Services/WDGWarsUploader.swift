@@ -150,6 +150,19 @@ actor WDGWarsUploader {
 
 	var pendingCount: Int { queue.count }
 
+	private var serverIDCache: (ids: Set<String>, at: Date)?
+
+	/// Meshtastic node ids WDGWars lists (`/api/meshcore`, world-wide). Cached for ten minutes.
+	func serverNodeIDs() async -> Set<String>? {
+		if let cache = serverIDCache, Date().timeIntervalSince(cache.at) < 600 { return cache.ids }
+		guard !apiKey.isEmpty,
+			  let (status, data) = try? await get("meshcore"), status == 200,
+			  let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return nil }
+		let ids = Set(list.filter { ($0["network"] as? String) == "meshtastic" }.compactMap { $0["node_id"] as? String })
+		serverIDCache = (ids, Date())
+		return ids
+	}
+
 	var uploadedIDs: Set<String> { Set(lastSent.keys) }
 
 	var queuedIDs: Set<String> { Set(queue.map(\.nodeId)) }
