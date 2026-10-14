@@ -1306,6 +1306,7 @@ class AccessoryManager: ObservableObject, MqttClientProxyManagerDelegate {
 							nodeDatabaseSavedAt = Date()
 						}
 						Logger.data.info("💾 [Database] Batch saved all node info after database retrieval")
+						await WDGWarsAutoScan.afterConnect(context: context)
 						if let activeDeviceNum {
 							MeshShareSnapshotBuilder.refresh(
 								nodeNum: activeDeviceNum,

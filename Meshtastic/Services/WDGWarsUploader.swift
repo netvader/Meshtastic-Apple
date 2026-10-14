@@ -21,12 +21,35 @@ struct WDGWarsRecord: Codable, Equatable {
 	var pathHops: Int?
 }
 
+/// What happened since the radio was last connected, kept so it is still visible after auto upload.
+struct WDGWarsSession: Codable {
+	/// Ids of nodes with a GPS position seen so far. Nil until the first scan, which only sets the baseline.
+	var seenGPSIDs: Set<String>?
+	var start: Date?
+	/// New nodes with GPS found since `start`.
+	var found: [String] = []
+	var uploaded = 0
+	var lastUploadAt: Date?
+	var lastUploadCount = 0
+}
+
+struct WDGWarsActivity {
+	var start: Date?
+	var found: [String] = []
+	var foundUploaded = 0
+	var uploaded = 0
+	var waiting = 0
+	var lastUploadAt: Date?
+	var lastUploadCount = 0
+}
+
 actor WDGWarsUploader {
 	static let shared = WDGWarsUploader()
 
 	static let enabledKey = "wdgwarsAutoUpload"
 	private static let queueKey = "wdgwarsQueue"
 	private static let sentKey = "wdgwarsSent"
+	private static let sessionKey = "wdgwarsSession"
 
 	private static let roleNames: [Int32: String] = [
 		0: "CLIENT", 1: "CLIENT_MUTE", 2: "ROUTER", 3: "ROUTER_CLIENT", 4: "REPEATER", 5: "TRACKER",
@@ -44,6 +67,7 @@ actor WDGWarsUploader {
 	private var queue: [WDGWarsRecord]
 	private var lastSent: [String: WDGWarsRecord]
 	private var flushTask: Task<Void, Never>?
+	private var session: WDGWarsSession
 
 	private(set) var lastResult: String = ""
 
@@ -51,6 +75,7 @@ actor WDGWarsUploader {
 		queue = (Self.load([WDGWarsRecord].self, key: Self.queueKey) ?? []).map(Self.normalized)
 		let sent = (Self.load([String: WDGWarsRecord].self, key: Self.sentKey) ?? [:]).values.map(Self.normalized)
 		lastSent = Dictionary(sent.map { ($0.nodeId, $0) }, uniquingKeysWith: { $1 })
+		session = Self.load(WDGWarsSession.self, key: Self.sessionKey) ?? WDGWarsSession()
 	}
 
 	// MARK: Settings
@@ -92,6 +117,9 @@ actor WDGWarsUploader {
 	/// Called for every position packet.
 	func record(nodeNum: Int64, name: String?, role: Int32?, latitudeI: Int32, longitudeI: Int32,
 				rssi: Int32, snr: Float, viaMqtt: Bool, hops: Int?, time: Date) {
+		if latitudeI != Int32.max, longitudeI != Int32.max, latitudeI != 0 || longitudeI != 0 {
+			noteGPSNodes([Self.nodeID(nodeNum)])
+		}
 		guard isEnabled,
 			  let rec = Self.makeRecord(nodeNum: nodeNum, name: name, role: role, latitudeI: latitudeI,
 										longitudeI: longitudeI, rssi: rssi, snr: snr, viaMqtt: viaMqtt,
@@ -135,6 +163,10 @@ actor WDGWarsUploader {
 				}
 				queue.removeFirst(batch.count)
 				for r in batch { lastSent[r.nodeId] = r }
+				session.uploaded += batch.count
+				session.lastUploadAt = Date()
+				session.lastUploadCount = batch.count
+				Self.save(session, key: Self.sessionKey)
 				Self.save(queue, key: Self.queueKey)
 				Self.save(lastSent, key: Self.sentKey)
 				lastResult = "Uploaded \(batch.count) nodes"
@@ -149,6 +181,46 @@ actor WDGWarsUploader {
 	}
 
 	var pendingCount: Int { queue.count }
+
+	// MARK: Session
+
+	/// Called when a radio connects: starts counting what is new from now on.
+	func beginSession() {
+		session.start = Date()
+		session.found = []
+		session.uploaded = 0
+		Self.save(session, key: Self.sessionKey)
+	}
+
+	/// Remembers nodes with a GPS position and returns the ones not seen before. The first call only
+	/// sets the baseline, so nodes that were already stored are not reported as new.
+	@discardableResult
+	func noteGPSNodes(_ ids: [String]) -> [String] {
+		guard var seen = session.seenGPSIDs else {
+			session.seenGPSIDs = Set(ids)
+			Self.save(session, key: Self.sessionKey)
+			return []
+		}
+		var fresh: [String] = []
+		for id in ids where !seen.contains(id) {
+			seen.insert(id)
+			fresh.append(id)
+		}
+		guard !fresh.isEmpty else { return [] }
+		session.seenGPSIDs = seen
+		session.found.append(contentsOf: fresh)
+		Self.save(session, key: Self.sessionKey)
+		return fresh
+	}
+
+	func activity() -> WDGWarsActivity {
+		let sent = Set(lastSent.keys)
+		return WDGWarsActivity(
+			start: session.start, found: session.found,
+			foundUploaded: session.found.filter { sent.contains($0) }.count,
+			uploaded: session.uploaded, waiting: queue.count,
+			lastUploadAt: session.lastUploadAt, lastUploadCount: session.lastUploadCount)
+	}
 
 	private var serverIDCache: (ids: Set<String>, at: Date)?
 

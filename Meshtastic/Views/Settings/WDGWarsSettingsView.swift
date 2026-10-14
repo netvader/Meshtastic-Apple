@@ -7,6 +7,8 @@
 import SwiftUI
 
 struct WDGWarsSettingsView: View {
+	@EnvironmentObject var accessoryManager: AccessoryManager
+	@State private var activity = WDGWarsActivity()
 	@AppStorage(WDGWarsUploader.enabledKey) private var autoUpload = false
 	@AppStorage("wdgwarsKeyLocked") private var keyLocked = false
 	@State private var apiKey = WDGWarsKeychain.load()
@@ -22,6 +24,13 @@ struct WDGWarsSettingsView: View {
 		}
 		.navigationTitle("WDGWars Upload")
 		.navigationBarTitleDisplayMode(.inline)
+		.task {
+			// Keeps the summary current while the screen is open, so uploads show up as they happen.
+			while !Task.isCancelled {
+				activity = await WDGWarsUploader.shared.activity()
+				try? await Task.sleep(for: .seconds(3))
+			}
+		}
 	}
 
 	// MARK: Account
@@ -94,10 +103,40 @@ struct WDGWarsSettingsView: View {
 			NavigationLink {
 				WDGWarsNodeListView()
 			} label: {
-				Label("Nodes", systemImage: "antenna.radiowaves.left.and.right")
+				VStack(alignment: .leading, spacing: 6) {
+					Label("Nodes", systemImage: "antenna.radiowaves.left.and.right")
+					activitySummary
+				}
 			}
 		} footer: {
-			Text("Lists every node with filters, sorting, a map jump and the upload actions.")
+			Text("Counts since the radio was last connected. Tap to see the nodes, filter them and upload.")
+		}
+	}
+
+	@ViewBuilder private var activitySummary: some View {
+		HStack(spacing: 6) {
+			Circle()
+				.fill(accessoryManager.isConnected ? Color.green : Color.secondary.opacity(0.5))
+				.frame(width: 8, height: 8)
+			Text(accessoryManager.isConnected ? "Radio connected" : "No radio connected")
+		}
+		.font(.caption)
+		.foregroundStyle(.secondary)
+		if activity.start == nil {
+			Text("Connect a radio to see new nodes here.")
+				.font(.caption).foregroundStyle(.secondary)
+		} else {
+			HStack(spacing: 12) {
+				Label("\(activity.found.count) new with GPS", systemImage: "sparkles")
+				Label("\(activity.uploaded) uploaded", systemImage: "icloud.and.arrow.up")
+				Label("\(activity.waiting) waiting", systemImage: "clock")
+			}
+			.font(.caption)
+			.foregroundStyle(.secondary)
+			if let last = activity.lastUploadAt {
+				Text("Last upload \(last.formatted(.dateTime.day().month().hour().minute())) · \(activity.lastUploadCount) nodes")
+					.font(.caption).foregroundStyle(.secondary)
+			}
 		}
 	}
 }

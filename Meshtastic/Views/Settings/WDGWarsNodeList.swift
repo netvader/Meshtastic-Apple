@@ -9,17 +9,20 @@ import SwiftData
 
 /// Switches that can be combined; a node has to pass every switch that is on.
 struct WDGWarsNodeFilters: Equatable {
+	/// Only nodes found since the radio was connected.
+	var session = false
 	var withGPS = false
 	var known = false
 	var new = false
 	var waiting = false
 	var uploaded = false
 
-	var isActive: Bool { withGPS || known || new || waiting || uploaded }
+	var isActive: Bool { session || withGPS || known || new || waiting || uploaded }
 
 	func matches(_ r: WDGWarsNodeRow) -> Bool {
 		// Nodes that are only in the upload lists show up when those switches are on.
 		guard r.inDatabase || waiting || uploaded else { return false }
+		if session && !r.inSession { return false }
 		if withGPS && !r.hasGPS { return false }
 		if known && !r.known { return false }
 		if new && !(r.hasGPS && !r.known) { return false }
@@ -53,6 +56,8 @@ struct WDGWarsNodeRow: Identifiable {
 	var known: Bool
 	var queued: Bool
 	var uploaded: Bool
+	/// New with a GPS position since the radio was connected.
+	var inSession = false
 	/// What would be sent for this node, if it passes the upload filters.
 	var uploadable: WDGWarsRecord?
 }
@@ -76,6 +81,7 @@ struct WDGWarsNodeIndex {
 		let uploader = WDGWarsUploader.shared
 		let sent = await uploader.uploadedNodes
 		let queue = await uploader.pendingNodes
+		let sessionFound = Set(await uploader.activity().found)
 		let sentIDs = Set(sent.map(\.nodeId))
 		let queuedIDs = Set(queue.map(\.nodeId))
 		let known = (await uploader.serverNodeIDs() ?? []).union(sentIDs)
@@ -90,7 +96,8 @@ struct WDGWarsNodeIndex {
 				&& $0.latitudeI != Int32.max && $0.longitudeI != Int32.max } ?? false
 			var row = WDGWarsNodeRow(
 				id: id, name: name, num: node.num, time: pos?.time ?? node.lastHeard, inDatabase: true, hasGPS: hasGPS,
-				known: known.contains(id), queued: queuedIDs.contains(id), uploaded: sentIDs.contains(id))
+				known: known.contains(id), queued: queuedIDs.contains(id), uploaded: sentIDs.contains(id),
+				inSession: sessionFound.contains(id))
 			if hasGPS, let pos {
 				row.lat = Double(pos.latitudeI) / 1e7
 				row.lon = Double(pos.longitudeI) / 1e7
@@ -111,7 +118,7 @@ struct WDGWarsNodeIndex {
 				id: record.nodeId, name: record.name, lat: record.lat, lon: record.lon, rssi: record.rssi,
 				hops: record.pathHops, time: record.firstSeen, inDatabase: false, hasGPS: true,
 				known: known.contains(record.nodeId), queued: queuedIDs.contains(record.nodeId),
-				uploaded: sentIDs.contains(record.nodeId))
+				uploaded: sentIDs.contains(record.nodeId), inSession: sessionFound.contains(record.nodeId))
 		}
 		let sorted = byID.values.sorted { ($0.time ?? .distantPast) > ($1.time ?? .distantPast) }
 		return WDGWarsNodeIndex(rows: sorted)
@@ -225,6 +232,7 @@ struct WDGWarsNodeListView: View {
 
 	@ViewBuilder private var filterToggles: some View {
 		Section("Show only") {
+			Toggle("This connection (\(count(\.session)))", isOn: $filters.session)
 			Toggle("With GPS position (\(count(\.withGPS)))", isOn: $filters.withGPS)
 			// Known and new exclude each other.
 			Toggle("Known to WDGWars (\(count(\.known)))", isOn: Binding(
