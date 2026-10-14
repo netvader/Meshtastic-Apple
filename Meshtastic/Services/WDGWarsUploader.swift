@@ -65,18 +65,16 @@ actor WDGWarsUploader {
 
 	// MARK: Collecting
 
-	/// Called for every position packet. Applies the same filters as ratatoskr:
-	/// needs GPS and a direct radio measurement, nothing that came via MQTT.
-	func record(nodeNum: Int64, name: String?, role: Int32?, latitudeI: Int32, longitudeI: Int32,
-				rssi: Int32, snr: Float, viaMqtt: Bool, hops: Int?, time: Date) {
-		guard isEnabled, !viaMqtt else { return }
-		guard latitudeI != Int32.max, longitudeI != Int32.max, latitudeI != 0 || longitudeI != 0 else { return }
-		guard rssi != 0 || snr != 0 else { return }
-
-		let id = String(format: "%08x", UInt32(truncatingIfNeeded: nodeNum))
-		let rec = WDGWarsRecord(
+	/// Applies the same filters as ratatoskr: needs GPS and a direct radio measurement, nothing that came via MQTT.
+	nonisolated static func makeRecord(nodeNum: Int64, name: String?, role: Int32?, latitudeI: Int32, longitudeI: Int32,
+									   rssi: Int32, snr: Float, viaMqtt: Bool, hops: Int?, time: Date) -> WDGWarsRecord? {
+		guard !viaMqtt else { return nil }
+		guard latitudeI != Int32.max, longitudeI != Int32.max, latitudeI != 0 || longitudeI != 0 else { return nil }
+		guard rssi != 0 || snr != 0 else { return nil }
+		let id = nodeID(nodeNum)
+		return WDGWarsRecord(
 			nodeId: id,
-			nodeType: role.flatMap { Self.roleNames[$0] } ?? "CLIENT",
+			nodeType: role.flatMap { roleNames[$0] } ?? "CLIENT",
 			name: name ?? id,
 			lat: Double(latitudeI) / 1e7,
 			lon: Double(longitudeI) / 1e7,
@@ -84,6 +82,21 @@ actor WDGWarsUploader {
 			firstSeen: time,
 			pathHops: hops
 		)
+	}
+
+	/// 8 lowercase hex characters, no "!" (what the server stores).
+	nonisolated static func nodeID(_ num: Int64) -> String {
+		String(format: "%08x", UInt32(truncatingIfNeeded: num))
+	}
+
+	/// Called for every position packet.
+	func record(nodeNum: Int64, name: String?, role: Int32?, latitudeI: Int32, longitudeI: Int32,
+				rssi: Int32, snr: Float, viaMqtt: Bool, hops: Int?, time: Date) {
+		guard isEnabled,
+			  let rec = Self.makeRecord(nodeNum: nodeNum, name: name, role: role, latitudeI: latitudeI,
+										longitudeI: longitudeI, rssi: rssi, snr: snr, viaMqtt: viaMqtt,
+										hops: hops, time: time) else { return }
+		let id = rec.nodeId
 		if let prev = lastSent[id],
 		   time.timeIntervalSince(prev.firstSeen) < resendAge,
 		   Self.distance(prev, rec) < resendDistance {
@@ -136,6 +149,21 @@ actor WDGWarsUploader {
 	}
 
 	var pendingCount: Int { queue.count }
+
+	var uploadedIDs: Set<String> { Set(lastSent.keys) }
+
+	var queuedIDs: Set<String> { Set(queue.map(\.nodeId)) }
+
+	/// Adds many nodes at once (for example from the node database) and returns how many were new in the queue.
+	func enqueue(_ records: [WDGWarsRecord]) -> Int {
+		let queued = queuedIDs
+		let fresh = records.filter { !queued.contains($0.nodeId) }
+		guard !fresh.isEmpty else { return 0 }
+		queue.append(contentsOf: fresh)
+		Self.save(queue, key: Self.queueKey)
+		scheduleFlush()
+		return fresh.count
+	}
 
 	var pendingNodes: [WDGWarsRecord] { queue.sorted { $0.firstSeen > $1.firstSeen } }
 
