@@ -122,6 +122,8 @@ struct MeshMapMK: View {
 	@State private var editingSettings = false
 	@State private var editingFilters = false
 	@State var selectedNode: MeshMapSelectedNode?
+	/// Node the user asked to see from elsewhere in the app (for example the WDGWars list); drawn with a ring for a while.
+	@State private var highlightedNodeNum: Int64?
 	/// A tapped un-splittable coincident stack, shown in a disambiguation picker (nil = hidden).
 	@State private var colocatedStack: ColocatedMapStack?
 	/// An item chosen in the picker, opened only after that sheet dismisses (so the two don't collide).
@@ -364,7 +366,7 @@ struct MeshMapMK: View {
 			) { item in
 				switch item {
 				case let .node(snapshot):
-					MeshMapMKNodePin(nodeNum: snapshot.nodeNum, shortName: snapshot.shortName, isOnline: snapshot.isOnline, calculatedDelay: snapshot.calculatedDelay, dense: isDense)
+					MeshMapMKNodePin(nodeNum: snapshot.nodeNum, shortName: snapshot.shortName, isOnline: snapshot.isOnline, calculatedDelay: snapshot.calculatedDelay, dense: isDense, highlighted: snapshot.nodeNum == highlightedNodeNum)
 						.equatable()
 				case let .waypoint(waypoint):
 					// Distinct waypoint glyph when not clustered (matches the map legend's orange circle).
@@ -572,6 +574,7 @@ struct MeshMapMK: View {
 					guard case .map = router.selectedTab else { return }
 					applyTraceRouteSelection()
 					consumeCoverageEstimateState()
+					consumeSelectedNodeState()
 					// TODO: handle deep link for waypoints
 				}
 				.onChange(of: selectedMapLayer) { _, newMapLayer in
@@ -707,6 +710,7 @@ struct MeshMapMK: View {
 				syncFallbackLocation()
 				refreshMapWindowOpenState()
 				consumeCoverageEstimateState()
+				consumeSelectedNodeState()
 			// Initialize enabled overlay configs with all active files
 			// Migrate the legacy `.offline` base layer to the new independent offline-tiles overlay.
 			if selectedMapLayer == .offline {
@@ -749,6 +753,7 @@ struct MeshMapMK: View {
 				refreshPositionState(force: true)
 				applyTraceRouteSelection()
 				consumeCoverageEstimateState()
+				consumeSelectedNodeState()
 			} else {
 				flyover.stop(restoreCamera: false)
 				UIApplication.shared.isIdleTimerDisabled = false
@@ -920,6 +925,28 @@ struct MeshMapMK: View {
 		guard case .map = router.selectedTab else { return }
 		if case let .coverageEstimate(nodeNum)? = router.mapState {
 			presentCoverageEstimate(forNode: nodeNum)
+		}
+	}
+
+	/// Consume a `.selectedNode` map-state hand-off: centre the map on the node, zoom in and ring its pin.
+	/// The detail sheet stays closed because it is full height and would cover the map.
+	private func consumeSelectedNodeState() {
+		guard case .map = router.selectedTab else { return }
+		guard case let .selectedNode(nodeNum)? = router.mapState else { return }
+		router.mapState = nil
+		guard let coordinate = getNodeInfo(id: nodeNum, context: context)?.latestPosition?.nodeCoordinate else { return }
+		highlightedNodeNum = nodeNum
+		cameraCommand = ClusterMapCameraCommand(
+			id: UUID(),
+			region: MKCoordinateRegion(
+				center: coordinate,
+				span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
+			),
+			animated: true
+		)
+		Task { @MainActor in
+			try? await Task.sleep(for: .seconds(30))
+			if highlightedNodeNum == nodeNum { highlightedNodeNum = nil }
 		}
 	}
 
@@ -1973,8 +2000,24 @@ private struct MeshMapMKNodePin: View, Equatable {
 	let isOnline: Bool
 	let calculatedDelay: Double
 	let dense: Bool
+	var highlighted: Bool = false
 
 	var body: some View {
+		pin
+			// Background and overlay do not change the measured size of the annotation view.
+			.background {
+				if highlighted {
+					Circle().fill(Color.red.opacity(0.25)).frame(width: 96, height: 96)
+				}
+			}
+			.overlay {
+				if highlighted {
+					Circle().stroke(Color.red, lineWidth: 4).frame(width: 64, height: 64)
+				}
+			}
+	}
+
+	@ViewBuilder private var pin: some View {
 		if dense {
 			Circle()
 				.fill(Color(UIColor(hex: UInt32(nodeNum))).opacity(isOnline ? 0.9 : 0.6))
