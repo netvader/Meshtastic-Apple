@@ -310,6 +310,9 @@
         }
       }
     },
+    "· %lld outside" : {
+      "comment" : "Spatial map: nodes too far away to fit on the terrain"
+    },
     "%lld could not be removed." : {
       "comment" : "Result after removing unheard nodes: nodes the radio refused to remove"
     },
@@ -336,11 +339,68 @@
         }
       }
     },
+    "Center" : {
+      "comment" : "Spatial map: slide the map to put this node in the middle"
+    },
+    "Connected radio" : {
+      "comment" : "Spatial map: the selected node is the connected radio"
+    },
+    "Dark Map" : {
+      "comment" : "Spatial map: draw the map in its dark appearance"
+    },
+    "Fly a traceroute" : {
+      "comment" : "VoiceOver label for the spatial map flyover menu"
+    },
+    "Live traffic" : {
+      "comment" : "VoiceOver label for the spatial map traffic toggle"
+    },
+    "Maker" : {
+      "comment" : "Accessibility name for the maker hardware mark"
+    },
+    "Maker Hardware" : {
+      "comment" : "Node detail section title for independent maker hardware"
+    },
     "%lld were heard on the current settings before they were removed and were kept." : {
       "comment" : "Result after removing unheard nodes: nodes the radio reported heard again"
     },
+    "Map imagery unavailable; showing terrain shading" : {
+      "comment" : "Spatial map: the Apple map image could not be fetched"
+    },
+    "Map Layer" : {
+      "comment" : "Spatial map: picker for the image draped over the terrain"
+    },
+    "Map layer" : {
+      "comment" : "VoiceOver label for the spatial map layer menu"
+    },
+    "No traceroutes with positions" : {
+      "comment" : "Spatial map: flyover menu is empty"
+    },
+    "Node Detail" : {
+      "comment" : "Spatial map: open the node's detail screen"
+    },
+    "Node labels" : {
+      "comment" : "VoiceOver label for the spatial map labels toggle"
+    },
+    "Open 3D map" : {
+      "comment" : "VoiceOver label for the button that opens the spatial map volume"
+    },
     "Removed %lld nodes." : {
       "comment" : "Result after removing nodes not heard on the current LoRa settings"
+    },
+    "Show in 3D" : {
+      "comment" : "Node detail action: open the spatial map volume at this node"
+    },
+    "Shows the mesh on a terrain model in a volume." : {
+      "comment" : "VoiceOver hint for the button that opens the spatial map volume"
+    },
+    "Spatial Map" : {
+      "comment" : "Title of the visionOS spatial map volume"
+    },
+    "Terrain Shading" : {
+      "comment" : "Spatial map layer: hillshade only, no map imagery"
+    },
+    "Traceroute links" : {
+      "comment" : "VoiceOver label for the spatial map links toggle"
     },
     "Unheard Nodes" : {
       "comment" : "Title of the result shown after removing nodes not heard on the current LoRa settings"
@@ -1257,100 +1317,6 @@
       },
       "shouldTranslate" : false
     },
-    "%@ - %@ Towards  %@ Back" : {
-      "localizations" : {
-        "da" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ - %2$@ Mod %3$@ Tilbage"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Deine Position - Deine Position"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ - %2$@ Towards  %3$@ Back"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ - %2$@ ida %3$@ vuelta"
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "%1$@ - %2$@ Vers  %3$@ En arrière"
-          }
-        },
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ - %2$@ Verso %3$@ Indietro"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ - %2$@ 送信 %3$@ 受信"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ - 목적지까지 %2$@, 돌아오는 경로 %3$@"
-          }
-        },
-        "pt-BR" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "%1$@ - %2$@ Em direção a %3$@ de volta"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ - %2$@ В обратном  %3$@ направлении"
-          }
-        },
-        "sr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ - %2$@ Одлазних скокова %3$@ Долазних скокова"
-          }
-        },
-        "uk" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ - %2$@ вперед  %3$@ назад"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ - %2$@ Towards  %3$@ Back"
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "%1$@ - %2$@ 朝向 %3$@ 背向"
-          }
-        },
-        "zh-Hant-TW" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ - %2$@ 往  %3$@ 返"
-          }
-        }
-      }
-    },
     "%@ - No Response" : {
       "localizations" : {
         "da" : {
@@ -1982,36 +1948,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%1$@ %2$llds"
-          }
-        }
-      }
-    },
-    "%@ • %@ Towards • %@ Back" : {
-      "comment" : "A label that shows the time a trace route was created, the number of hops the route took towards the destination, and the number of hops the route took back. The first argument is a date and time. The second argument is the string “%arg Hops”. The third argument is the number of hops the route took back.",
-      "isCommentAutoGenerated" : true,
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "%1$@ • %2$@ Towards • %3$@ Back"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ • 목적지까지 %2$@ • 돌아오는 경로 %3$@"
-          }
-        },
-        "uk" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ • %2$@ вперед • %3$@ назад"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ • %2$@ ida • %3$@ vuelta"
           }
         }
       }
@@ -2797,6 +2733,9 @@
           }
         }
       }
+    },
+    "%@ out · %@ back" : {
+      "comment" : "Trace route card when the forward and return paths differ, e.g. \"3 Hops out · 4 Hops back\""
     },
     "%@ percent" : {
       "comment" : "VoiceOver value spoken as a percentage reading on a chart. %@ is the number.",
@@ -12545,6 +12484,9 @@
         }
       }
     },
+    "All Estimates" : {
+      "comment" : "Spatial map coverage option: show every coverage estimate in the area"
+    },
     "All secondary channel slots are full. Choose an existing secondary channel to replace — your primary channel is never touched." : {
       "comment" : "A message displayed when the user is prompted to replace a beacon's channel.",
       "isCommentAutoGenerated" : true,
@@ -17281,6 +17223,9 @@
         }
       }
     },
+    "Best / worst SNR" : {
+      "comment" : "Trace route share image: the highest and lowest SNR of the legs"
+    },
     "Biking" : {
       "comment" : "ActivityType.description\nActivityType.fileNameString"
     },
@@ -19363,6 +19308,9 @@
           }
         }
       }
+    },
+    "Cancel terrain download" : {
+      "comment" : "VoiceOver label to stop the spatial map terrain download"
     },
     "Canceled" : {
       "localizations" : {
@@ -28562,6 +28510,12 @@
         }
       }
     },
+    "Coverage" : {
+      "comment" : "Spatial map menu: which Site Planner coverage estimates to show on the terrain"
+    },
+    "Coverage estimate" : {
+      "comment" : "VoiceOver label for the spatial map card's coverage menu"
+    },
     "Coverage estimate failed" : {
       "comment" : "A title for an alert that displays when a coverage estimate fails.",
       "isCommentAutoGenerated" : true,
@@ -28585,6 +28539,12 @@
           }
         }
       }
+    },
+    "Coverage legend" : {
+      "comment" : "VoiceOver label for the spatial map coverage colors"
+    },
+    "Coverage Opacity" : {
+      "comment" : "Spatial map menu: how see-through the coverage overlay is"
     },
     "Create Node Contact NFC Tag" : {
       "comment" : "A section header that instructs the user to create a contact NFC tag.",
@@ -37029,6 +36989,15 @@
         }
       }
     },
+    "Download Terrain" : {
+      "comment" : "Spatial map: button that downloads elevation data so the volume shows relief"
+    },
+    "Download Terrain Automatically" : {
+      "comment" : "Spatial map menu: keep the volume's area covered by elevation data without asking"
+    },
+    "Download terrain for this area?" : {
+      "comment" : "Spatial map: title of the terrain download confirmation"
+    },
     "Download the %@ language pack to read the documentation in your language." : {
       "comment" : "A description of the action of downloading a translation language pack.",
       "isCommentAutoGenerated" : true,
@@ -37155,6 +37124,9 @@
         }
       }
     },
+    "Downloading terrain" : {
+      "comment" : "VoiceOver label for the spatial map terrain download progress"
+    },
     "Downloading, verifying and writing…" : {
       "localizations" : {
         "es" : {
@@ -37164,6 +37136,12 @@
           }
         }
       }
+    },
+    "Downloads about %@ of elevation data for a %@ area around the mesh." : {
+      "comment" : "Spatial map: terrain download confirmation; the arguments are the download size, e.g. 40 MB, and the area's width × height, e.g. 98 km × 104 km"
+    },
+    "Downloads elevation data so the map shows hills and valleys." : {
+      "comment" : "VoiceOver hint for the spatial map terrain download button"
     },
     "Drag the box, its corners, or the map to frame an area" : {
       "comment" : "A description of how to use the map selector.",
@@ -41438,6 +41416,12 @@
           }
         }
       }
+    },
+    "Estimate Coverage…" : {
+      "comment" : "Spatial map card: open the coverage estimate form for this node"
+    },
+    "Estimated %@" : {
+      "comment" : "Spatial map card: when this node's coverage estimate was made, e.g. Estimated 2 days ago"
     },
     "Estimating coverage…" : {
       "comment" : "A label displayed while running a coverage estimate.",
@@ -46003,6 +45987,12 @@
     "Forty Five Seconds" : {
       "comment" : "LocationUpdateInterval.description\nUpdateInterval.description"
     },
+    "Forward hops" : {
+      "comment" : "Trace route: hop count towards the target"
+    },
+    "Forward route" : {
+      "comment" : "Trace route timeline: heading for the path towards the target"
+    },
     "Four Hours" : {
       "comment" : "UpdateInterval.description"
     },
@@ -49493,6 +49483,9 @@
         }
       }
     },
+    "Hide Coverage" : {
+      "comment" : "Spatial map card: stop showing this node's coverage estimate"
+    },
     "Hide help" : {
       "comment" : "VoiceOver label for the help toggle button when help is showing",
       "localizations" : {
@@ -50246,6 +50239,9 @@
           }
         }
       }
+    },
+    "Hop Numbers and Signal" : {
+      "comment" : "Map legend title for the trace route hop number badges and SNR labels"
     },
     "hops" : {
       "comment" : "Search keyword"
@@ -56034,6 +56030,9 @@
         }
       }
     },
+    "Kept up to date by the Spatial Map. Delete it any time; it is downloaded again when the volume needs it (turn off Download Terrain Automatically to stop that)." : {
+      "comment" : "Offline map row caption for the terrain region the visionOS spatial map manages"
+    },
     "key" : {
       "comment" : "Search keyword"
     },
@@ -57841,6 +57840,9 @@
           }
         }
       }
+    },
+    "Light" : {
+      "comment" : "Spatial map coverage opacity option: most see-through"
     },
     "Limit all periodic broadcast intervals especially telemetry and position. If you need to increase hops, do it on nodes at the edges, not the ones in the middle. MQTT is not advised when you are duty cycle restricted because the gateway node is then doing all the work." : {
       "localizations" : {
@@ -62770,6 +62772,9 @@
           }
         }
       }
+    },
+    "Medium" : {
+      "comment" : "Spatial map coverage opacity option"
     },
     "Mesh activity update" : {
       "localizations" : {
@@ -86997,6 +87002,12 @@
         }
       }
     },
+    "No response" : {
+      "comment" : "Trace route state: request sent, nothing came back"
+    },
+    "No return route was reported." : {
+      "comment" : "Trace route share image: the response didn't include the path back"
+    },
     "No route to the destination node was found in the mesh. Try again when more nodes are reachable." : {
       "comment" : "RoutingError.description"
     },
@@ -87009,6 +87020,9 @@
           }
         }
       }
+    },
+    "No signal" : {
+      "comment" : "Spatial map legend: the dark shade where a coverage estimate found no signal"
     },
     "No SSH client found. We'll open the App Store so you can install one." : {
       "localizations" : {
@@ -89802,6 +89816,9 @@
           }
         }
       }
+    },
+    "Offline map storage is full. Delete a map in Offline Maps to download terrain for the whole mesh." : {
+      "comment" : "Spatial map: terrain for the whole mesh does not fit in the offline map storage limit"
     },
     "Offline Maps" : {
       "localizations" : {
@@ -100185,6 +100202,9 @@
         }
       }
     },
+    "Re-estimate Coverage…" : {
+      "comment" : "Spatial map card: run a new coverage estimate for this node"
+    },
     "Re-run Analysis" : {
       "comment" : "A button that triggers a re-run of the analysis.",
       "isCommentAutoGenerated" : true,
@@ -102054,6 +102074,9 @@
           }
         }
       }
+    },
+    "Relays are numbered in order, filled on the way out and outlined on the way back. Zoom in to see each leg's SNR." : {
+      "comment" : "Map legend description of the trace route hop number badges and SNR labels"
     },
     "Release Notes" : {
       "localizations" : {
@@ -104083,6 +104106,9 @@
         }
       }
     },
+    "Reset zoom" : {
+      "comment" : "Spatial map: button showing how far the map is zoomed in; tapping it zooms back out to the whole mesh"
+    },
     "Resetting…" : {
       "localizations" : {
         "ko" : {
@@ -104969,6 +104995,9 @@
         }
       }
     },
+    "Retry terrain download" : {
+      "comment" : "VoiceOver label to retry the spatial map terrain download after it failed"
+    },
     "Retry Update" : {
       "localizations" : {
         "de" : {
@@ -105191,6 +105220,9 @@
         }
       }
     },
+    "Return hops" : {
+      "comment" : "Trace route: hop count on the way back"
+    },
     "Return Path" : {
       "comment" : "A description of the return path of a trace route.",
       "isCommentAutoGenerated" : true,
@@ -105214,6 +105246,9 @@
           }
         }
       }
+    },
+    "Return route" : {
+      "comment" : "Trace route timeline: heading for the path back from the target"
     },
     "Review in Meshtastic" : {
       "comment" : "A button that opens a web page in the user's browser.",
@@ -106163,6 +106198,9 @@
           }
         }
       }
+    },
+    "Round trip" : {
+      "comment" : "Trace route: time from sending the request to getting the response"
     },
     "route" : {
       "comment" : "Search keyword"
@@ -110811,6 +110849,9 @@
         }
       }
     },
+    "Selected Node" : {
+      "comment" : "Spatial map coverage option: show the selected node's coverage estimate"
+    },
     "Send" : {
       "localizations" : {
         "da" : {
@@ -115264,6 +115305,9 @@
     "share" : {
       "comment" : "Search keyword"
     },
+    "Share" : {
+      "comment" : "Button that shares the trace route image"
+    },
     "Share Channels" : {
       "comment" : "A tip that explains how to share channels.",
       "isCommentAutoGenerated" : true,
@@ -116452,6 +116496,9 @@
           }
         }
       }
+    },
+    "Show Coverage" : {
+      "comment" : "Spatial map card: show this node's coverage estimate on the terrain"
     },
     "Show help" : {
       "comment" : "VoiceOver label for the help toggle button when help is hidden",
@@ -119683,6 +119730,9 @@
         }
       }
     },
+    "Spatial Map terrain" : {
+      "comment" : "Name of the terrain-only offline map the visionOS spatial map downloads and keeps up to date"
+    },
     "Speed" : {
       "localizations" : {
         "da" : {
@@ -121507,6 +121557,9 @@
           }
         }
       }
+    },
+    "Strong" : {
+      "comment" : "Spatial map coverage opacity option: least see-through"
     },
     "Subnet" : {
       "localizations" : {
@@ -123529,6 +123582,9 @@
         }
       }
     },
+    "Terrain Download Failed" : {
+      "comment" : "Spatial map: alert title when downloading terrain for the volume fails"
+    },
     "Terrain for %@" : {
       "localizations" : {
         "es" : {
@@ -125029,6 +125085,9 @@
         }
       }
     },
+    "The mesh is too spread out to download terrain for all of it." : {
+      "comment" : "Spatial map: the area around the mesh is over the per-map download limit"
+    },
     "The Meshtastic Apple app requires firmware version %@ or later. Older firmware versions are no longer supported and may have compatibility issues or missing features." : {
       "comment" : "A body text that explains that the app requires a certain version of the firmware.",
       "extractionState" : "stale",
@@ -126349,6 +126408,9 @@
           }
         }
       }
+    },
+    "The terrain download could not start." : {
+      "comment" : "Spatial map: alert message when the manager refuses the terrain download"
     },
     "The tertiary public key authorized to send admin messages to this node." : {
       "localizations" : {
@@ -128881,6 +128943,9 @@
         }
       }
     },
+    "Time window" : {
+      "comment" : "Trace route log: how far back the chart and list go"
+    },
     "Time window in seconds for rate limiting calculations." : {
       "extractionState" : "stale",
       "localizations" : {
@@ -131100,6 +131165,9 @@
         }
       }
     },
+    "Traceroute Complete" : {
+      "comment" : "Notification title when a trace route you sent gets a response"
+    },
     "track" : {
       "comment" : "Search keyword"
     },
@@ -133162,6 +133230,12 @@
           }
         }
       }
+    },
+    "Unknown repeater" : {
+      "comment" : "Trace route hop that didn't add its node number"
+    },
+    "Unknown signal" : {
+      "comment" : "Trace route timeline: a leg whose SNR wasn't reported"
     },
     "UNLISTED" : {
       "comment" : "A label for a firmware tag.",
@@ -137676,6 +137750,9 @@
         }
       }
     },
+    "via MQTT" : {
+      "comment" : "Spatial map: node heard over MQTT"
+    },
     "Via Mqtt" : {
       "localizations" : {
         "da" : {
@@ -138330,6 +138407,9 @@
           }
         }
       }
+    },
+    "Waiting for response" : {
+      "comment" : "Trace route state: request sent, no answer yet"
     },
     "Waiting to be acknowledged. . ." : {
       "extractionState" : "stale",
@@ -142781,6 +142861,12 @@
           }
         }
       }
+    },
+    "Zoom in" : {
+      "comment" : "Spatial map: show a smaller area on the table in more detail"
+    },
+    "Zoom out" : {
+      "comment" : "Spatial map: show a wider area on the table"
     }
   },
   "version" : "1.1"
