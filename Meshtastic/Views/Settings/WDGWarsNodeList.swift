@@ -38,6 +38,8 @@ enum WDGWarsFilter: String, CaseIterable, Identifiable {
 struct WDGWarsNodeRow: Identifiable {
 	var id: String
 	var name: String
+	/// Node number, set for nodes in the app's database (needed to show them on the map).
+	var num: Int64?
 	var lat: Double?
 	var lon: Double?
 	var rssi: Int?
@@ -94,7 +96,7 @@ struct WDGWarsNodeIndex {
 			let hasGPS = pos.map { ($0.latitudeI != 0 || $0.longitudeI != 0)
 				&& $0.latitudeI != Int32.max && $0.longitudeI != Int32.max } ?? false
 			var row = WDGWarsNodeRow(
-				id: id, name: name, time: pos?.time ?? node.lastHeard, inDatabase: true, hasGPS: hasGPS,
+				id: id, name: name, num: node.num, time: pos?.time ?? node.lastHeard, inDatabase: true, hasGPS: hasGPS,
 				known: known.contains(id), queued: queuedIDs.contains(id), uploaded: sentIDs.contains(id))
 			if hasGPS, let pos {
 				row.lat = Double(pos.latitudeI) / 1e7
@@ -125,6 +127,7 @@ struct WDGWarsNodeIndex {
 
 struct WDGWarsNodeListView: View {
 	@Environment(\.modelContext) private var context
+	@EnvironmentObject var router: Router
 	@State var filter: WDGWarsFilter
 	@State private var index = WDGWarsNodeIndex()
 	@State private var working = false
@@ -143,6 +146,8 @@ struct WDGWarsNodeListView: View {
 				}
 				.pickerStyle(.menu)
 				actionRow
+			} footer: {
+				Text("Found: nodes stored in this app, without your own radio. Known: already uploaded by this app or listed by WDGWars. New: with GPS but not known yet. Tap a node to show it on the map.")
 			}
 			Section("\(filter.title) (\(rows.count))") {
 				if rows.isEmpty {
@@ -186,24 +191,48 @@ struct WDGWarsNodeListView: View {
 		}
 	}
 
+	@ViewBuilder
 	private func rowView(_ r: WDGWarsNodeRow) -> some View {
+		if let num = r.num, r.hasGPS {
+			Button {
+				showOnMap(num)
+			} label: {
+				rowContent(r, onMap: true)
+			}
+			.buttonStyle(.plain)
+		} else {
+			rowContent(r, onMap: false)
+		}
+	}
+
+	private func rowContent(_ r: WDGWarsNodeRow, onMap: Bool) -> some View {
 		VStack(alignment: .leading, spacing: 2) {
 			HStack {
-				Text(r.name)
+				Text(r.name).font(.body)
 				Spacer()
-				Image(systemName: r.hasGPS ? "location.fill" : "location.slash")
-					.foregroundStyle(r.hasGPS ? .blue : .secondary)
 				if r.known { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
 				if r.queued { Image(systemName: "clock").foregroundStyle(.orange) }
 				if r.uploaded { Image(systemName: "icloud.fill").foregroundStyle(.blue) }
+				if onMap { Image(systemName: "map").foregroundStyle(.blue) }
 			}
-			let position = (r.lat != nil && r.lon != nil) ? String(format: " · %.5f, %.5f", r.lat!, r.lon!) : ""
-			Text(r.id + position).font(.caption).foregroundStyle(.secondary)
-			Text((r.time?.formatted(Self.dateStyle) ?? "–")
+			if let lat = r.lat, let lon = r.lon {
+				Label(String(format: "%.5f, %.5f", lat, lon), systemImage: "location.fill")
+					.font(.subheadline).foregroundStyle(.blue)
+			} else {
+				Label("No GPS position", systemImage: "location.slash")
+					.font(.subheadline).foregroundStyle(.secondary)
+			}
+			Text(r.id + " · " + (r.time?.formatted(Self.dateStyle) ?? "–")
 				 + (r.rssi.map { " · \($0) dBm" } ?? "")
 				 + (r.hops.map { " · \($0) hops" } ?? ""))
-				.font(.caption2).foregroundStyle(.secondary)
+				.font(.caption).foregroundStyle(.secondary)
 		}
+	}
+
+	/// Opens the node on the app's map tab.
+	private func showOnMap(_ num: Int64) {
+		router.selectedTab = .map
+		router.mapState = .selectedNode(num)
 	}
 
 	private func reload() async {

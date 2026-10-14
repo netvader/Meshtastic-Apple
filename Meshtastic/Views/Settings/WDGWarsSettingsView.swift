@@ -5,11 +5,8 @@
 //
 
 import SwiftUI
-import SwiftData
 
 struct WDGWarsSettingsView: View {
-	@Environment(\.modelContext) private var context
-	@State private var index = WDGWarsNodeIndex()
 	@AppStorage(WDGWarsUploader.enabledKey) private var autoUpload = false
 	@AppStorage("wdgwarsKeyLocked") private var keyLocked = false
 	@State private var apiKey = WDGWarsKeychain.load()
@@ -20,13 +17,11 @@ struct WDGWarsSettingsView: View {
 	var body: some View {
 		List {
 			accountSection
-			overviewSection
 			uploadSection
+			nodesSection
 		}
 		.navigationTitle("WDGWars Upload")
 		.navigationBarTitleDisplayMode(.inline)
-		.onAppear { Task { await refresh() } }
-		.refreshable { await refresh() }
 	}
 
 	// MARK: Account
@@ -92,29 +87,17 @@ struct WDGWarsSettingsView: View {
 		}
 	}
 
-	// MARK: Overview
+	// MARK: Nodes
 
-	private var overviewSection: some View {
+	private var nodesSection: some View {
 		Section {
-			ForEach(WDGWarsFilter.allCases) { filter in
-				NavigationLink {
-					WDGWarsNodeListView(filter: filter)
-				} label: {
-					LabeledContent {
-						Text("\(index.count(for: filter))")
-					} label: {
-						Label(filter.title, systemImage: filter.icon)
-					}
-				}
+			NavigationLink {
+				WDGWarsNodeListView(filter: .found)
+			} label: {
+				Label("Nodes", systemImage: "antenna.radiowaves.left.and.right")
 			}
-		} header: {
-			Text("Nodes")
 		} footer: {
-			Text("Found: nodes stored in this app, without your own radio. Known: already uploaded by this app or listed by WDGWars. New: with GPS but not known yet. Tap a row to see the nodes.")
+			Text("Filter by found, GPS, known, new, waiting and uploaded. Waiting nodes can be uploaded from there.")
 		}
-	}
-
-	private func refresh() async {
-		index = await WDGWarsNodeIndex.build(context: context)
 	}
 }
