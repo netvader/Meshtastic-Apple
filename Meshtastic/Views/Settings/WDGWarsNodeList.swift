@@ -7,32 +7,34 @@
 import SwiftUI
 import SwiftData
 
-enum WDGWarsFilter: String, CaseIterable, Identifiable {
-	case found, withGPS, known, new, waiting, uploaded
+/// Switches that can be combined; a node has to pass every switch that is on.
+struct WDGWarsNodeFilters: Equatable {
+	var withGPS = false
+	var known = false
+	var new = false
+	var waiting = false
+	var uploaded = false
+
+	var isActive: Bool { withGPS || known || new || waiting || uploaded }
+
+	func matches(_ r: WDGWarsNodeRow) -> Bool {
+		// Nodes that are only in the upload lists show up when those switches are on.
+		guard r.inDatabase || waiting || uploaded else { return false }
+		if withGPS && !r.hasGPS { return false }
+		if known && !r.known { return false }
+		if new && !(r.hasGPS && !r.known) { return false }
+		if waiting && !r.queued { return false }
+		if uploaded && !r.uploaded { return false }
+		return true
+	}
+}
+
+enum WDGWarsSort: String, CaseIterable, Identifiable {
+	case date, name
 
 	var id: String { rawValue }
 
-	var title: String {
-		switch self {
-		case .found: return "Found nodes"
-		case .withGPS: return "With GPS position"
-		case .known: return "Known to WDGWars"
-		case .new: return "New"
-		case .waiting: return "Waiting to upload"
-		case .uploaded: return "Uploaded"
-		}
-	}
-
-	var icon: String {
-		switch self {
-		case .found: return "antenna.radiowaves.left.and.right"
-		case .withGPS: return "location.fill"
-		case .known: return "checkmark.circle"
-		case .new: return "sparkles"
-		case .waiting: return "tray.and.arrow.up"
-		case .uploaded: return "icloud.and.arrow.up"
-		}
-	}
+	var title: String { self == .date ? "Date" : "Name" }
 }
 
 struct WDGWarsNodeRow: Identifiable {
@@ -53,29 +55,20 @@ struct WDGWarsNodeRow: Identifiable {
 	var uploaded: Bool
 	/// What would be sent for this node, if it passes the upload filters.
 	var uploadable: WDGWarsRecord?
-
-	func matches(_ filter: WDGWarsFilter) -> Bool {
-		switch filter {
-		case .found: return inDatabase
-		case .withGPS: return inDatabase && hasGPS
-		case .known: return inDatabase && hasGPS && known
-		case .new: return inDatabase && hasGPS && !known
-		case .waiting: return queued
-		case .uploaded: return uploaded
-		}
-	}
 }
 
 /// All nodes with their status, worked out once from the node database and the upload lists.
 struct WDGWarsNodeIndex {
 	var rows: [WDGWarsNodeRow] = []
 
-	func rows(for filter: WDGWarsFilter) -> [WDGWarsNodeRow] { rows.filter { $0.matches(filter) } }
-	func count(for filter: WDGWarsFilter) -> Int { rows.reduce(0) { $0 + ($1.matches(filter) ? 1 : 0) } }
+	/// How many nodes pass one switch on its own (shown next to the switch).
+	func count(_ filters: WDGWarsNodeFilters) -> Int { rows.reduce(0) { $0 + (filters.matches($1) ? 1 : 0) } }
+
+	var waitingCount: Int { rows.reduce(0) { $0 + ($1.queued ? 1 : 0) } }
 
 	/// New nodes that pass the upload filters but are not in the queue yet.
 	var addable: [WDGWarsRecord] {
-		rows.filter { $0.matches(.new) && !$0.queued }.compactMap(\.uploadable)
+		rows.filter { $0.inDatabase && $0.hasGPS && !$0.known && !$0.queued }.compactMap(\.uploadable)
 	}
 
 	@MainActor
@@ -128,68 +121,130 @@ struct WDGWarsNodeIndex {
 struct WDGWarsNodeListView: View {
 	@Environment(\.modelContext) private var context
 	@EnvironmentObject var router: Router
-	@State var filter: WDGWarsFilter
 	@State private var index = WDGWarsNodeIndex()
+	@State private var filters = WDGWarsNodeFilters()
+	@AppStorage("wdgwarsSort") private var sort: WDGWarsSort = .date
+	@AppStorage("wdgwarsSortReversed") private var reversed = false
+	@State private var search = ""
 	@State private var working = false
-	@State private var result = ""
+	@State private var message: String?
 
 	private static let dateStyle: Date.FormatStyle = .dateTime.day().month().hour().minute()
 
+	private var shown: [WDGWarsNodeRow] {
+		let text = search.trimmingCharacters(in: .whitespaces).lowercased()
+		var list = index.rows.filter { row in
+			filters.matches(row)
+				&& (text.isEmpty || row.name.lowercased().contains(text) || row.id.contains(text))
+		}
+		switch sort {
+		case .date:
+			list.sort { ($0.time ?? .distantPast) > ($1.time ?? .distantPast) }
+		case .name:
+			list.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+		}
+		return reversed ? list.reversed() : list
+	}
+
 	var body: some View {
-		let rows = index.rows(for: filter)
+		let rows = shown
 		List {
-			Section {
-				Picker("Show", selection: $filter) {
-					ForEach(WDGWarsFilter.allCases) { f in
-						Label("\(f.title) (\(index.count(for: f)))", systemImage: f.icon).tag(f)
-					}
-				}
-				.pickerStyle(.menu)
-				actionRow
-			} footer: {
-				Text("Found: nodes stored in this app, without your own radio. Known: already uploaded by this app or listed by WDGWars. New: with GPS but not known yet. Tap a node to show it on the map.")
+			if rows.isEmpty {
+				Text("No nodes.").foregroundStyle(.secondary)
 			}
-			Section("\(filter.title) (\(rows.count))") {
-				if rows.isEmpty {
-					Text("No nodes.").foregroundStyle(.secondary)
-				}
-				ForEach(rows.prefix(300)) { row in
-					rowView(row)
-				}
-				if rows.count > 300 {
-					Text("Showing the 300 most recent.").font(.caption).foregroundStyle(.secondary)
-				}
+			ForEach(rows.prefix(300)) { row in
+				rowView(row)
+			}
+			if rows.count > 300 {
+				Text("Showing the first 300.").font(.caption).foregroundStyle(.secondary)
 			}
 		}
-		.navigationTitle(filter.title)
+		.listStyle(.plain)
+		.navigationTitle(String.localizedStringWithFormat("Nodes (%@)".localized, String(rows.count)))
 		.navigationBarTitleDisplayMode(.inline)
+		.searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find a node")
+		.autocorrectionDisabled(true)
+		.safeAreaInset(edge: .bottom, alignment: .trailing) { bottomBar }
+		.alert(message ?? "", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
+			Button("OK") { }
+		}
 		.task { await reload() }
 		.refreshable { await reload() }
 	}
 
-	/// Upload now for the waiting list, adding to the queue for the new list.
-	@ViewBuilder private var actionRow: some View {
-		if filter == .waiting {
-			Button {
-				Task { await uploadNow() }
-			} label: {
-				Label("Upload now", systemImage: "icloud.and.arrow.up")
+	// MARK: Filter button
+
+	private var bottomBar: some View {
+		HStack {
+			Spacer()
+			if filters.isActive {
+				Button {
+					withAnimation { filters = WDGWarsNodeFilters() }
+				} label: {
+					Image(systemName: "arrow.counterclockwise.circle").padding(.vertical, 5)
+				}
+				.tint(Color(UIColor.secondarySystemBackground))
+				.foregroundColor(.accentColor)
+				.buttonStyle(.borderedProminent)
+				.accessibilityLabel("Reset node filters")
 			}
-			.disabled(index.count(for: .waiting) == 0 || working)
-		} else if filter == .new {
-			Button {
-				Task { await addToQueue() }
+			Menu {
+				filterToggles
+				Section("Sort by") {
+					Picker("Sort by", selection: $sort) {
+						ForEach(WDGWarsSort.allCases) { Text($0.title).tag($0) }
+					}
+					Toggle("Reverse order", isOn: $reversed)
+				}
+				Section("Upload") {
+					Button {
+						Task { await uploadNow() }
+					} label: {
+						Label("Upload now (\(index.waitingCount) waiting)", systemImage: "icloud.and.arrow.up")
+					}
+					.disabled(index.waitingCount == 0 || working)
+					Button {
+						Task { await addToQueue() }
+					} label: {
+						Label("Add \(index.addable.count) new nodes to the queue", systemImage: "plus.circle")
+					}
+					.disabled(index.addable.isEmpty || working)
+				}
 			} label: {
-				Label("Add \(index.addable.count) new nodes to the queue", systemImage: "plus.circle")
+				Image(systemName: filters.isActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+					.padding(.vertical, 5)
 			}
-			.disabled(index.addable.isEmpty || working)
+			.tint(Color(UIColor.secondarySystemBackground))
+			.foregroundColor(.accentColor)
+			.buttonStyle(.borderedProminent)
+			.accessibilityLabel("Show node filters")
 		}
-		if working {
-			ProgressView()
-		} else if !result.isEmpty, filter == .waiting || filter == .new {
-			Text(result).font(.caption).foregroundStyle(.secondary)
+		.controlSize(.regular)
+		.padding(5)
+	}
+
+	@ViewBuilder private var filterToggles: some View {
+		Section("Show only") {
+			Toggle("With GPS position (\(count(\.withGPS)))", isOn: $filters.withGPS)
+			// Known and new exclude each other.
+			Toggle("Known to WDGWars (\(count(\.known)))", isOn: Binding(
+				get: { filters.known },
+				set: { filters.known = $0; if $0 { filters.new = false } }))
+			Toggle("New (\(count(\.new)))", isOn: Binding(
+				get: { filters.new },
+				set: { filters.new = $0; if $0 { filters.known = false } }))
+			Toggle("Waiting to upload (\(count(\.waiting)))", isOn: $filters.waiting)
+			Toggle("Uploaded (\(count(\.uploaded)))", isOn: $filters.uploaded)
 		}
 	}
+
+	private func count(_ flag: WritableKeyPath<WDGWarsNodeFilters, Bool>) -> Int {
+		var single = WDGWarsNodeFilters()
+		single[keyPath: flag] = true
+		return index.count(single)
+	}
+
+	// MARK: Rows
 
 	@ViewBuilder
 	private func rowView(_ r: WDGWarsNodeRow) -> some View {
@@ -235,6 +290,8 @@ struct WDGWarsNodeListView: View {
 		router.mapState = .selectedNode(num)
 	}
 
+	// MARK: Actions
+
 	private func reload() async {
 		index = await WDGWarsNodeIndex.build(context: context)
 	}
@@ -242,7 +299,7 @@ struct WDGWarsNodeListView: View {
 	private func uploadNow() async {
 		working = true
 		await WDGWarsUploader.shared.flush()
-		result = await WDGWarsUploader.shared.lastResult
+		message = await WDGWarsUploader.shared.lastResult
 		await reload()
 		working = false
 	}
@@ -250,7 +307,7 @@ struct WDGWarsNodeListView: View {
 	private func addToQueue() async {
 		working = true
 		let added = await WDGWarsUploader.shared.enqueue(index.addable)
-		result = "\(added) nodes added to the queue."
+		message = "\(added) nodes added to the queue."
 		await reload()
 		working = false
 	}

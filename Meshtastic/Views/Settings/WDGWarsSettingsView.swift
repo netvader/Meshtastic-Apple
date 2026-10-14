@@ -92,12 +92,12 @@ struct WDGWarsSettingsView: View {
 	private var nodesSection: some View {
 		Section {
 			NavigationLink {
-				WDGWarsNodeListView(filter: .found)
+				WDGWarsNodeListView()
 			} label: {
 				Label("Nodes", systemImage: "antenna.radiowaves.left.and.right")
 			}
 		} footer: {
-			Text("Filter by found, GPS, known, new, waiting and uploaded. Waiting nodes can be uploaded from there.")
+			Text("Lists every node with filters, sorting, a map jump and the upload actions.")
 		}
 	}
 }
