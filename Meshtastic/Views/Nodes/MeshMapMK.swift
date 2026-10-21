@@ -97,6 +97,15 @@ struct MeshMapMK: View {
 	@State private var tracerouteLayout: TraceRouteMapLayout?
 	@State private var tracerouteLayoutKey = ""
 	@State private var lastTraceRouteKey = "init"
+	/// Lines between nodes that hear each other directly, and their SNR pills.
+	@AppStorage("meshMapShowDirectLinks") private var showDirectLinks = false
+	@State private var linkOverlays: [ClusterMapOverlay] = []
+	@State private var linkLayout: NodeLinkMapLayout?
+	@State private var lastLinkKey = "init"
+	/// When the direct links were last fetched, so the 2 s position refresh fetches them less often.
+	@State private var lastLinkRefresh = Date.distantPast
+	/// Links fade over hours, so the regular refresh only needs to re-fetch them this often.
+	private static let linkRefreshInterval: TimeInterval = 15
 	/// Drives the guided 3D camera flythrough along the selected trace route.
 	@StateObject private var flyover = TraceRouteFlyover()
 	@AppStorage("enableMapWaypoints") private var showWaypoints = true
@@ -190,6 +199,11 @@ struct MeshMapMK: View {
 	@MainActor
 	private func refreshPositionState(force: Bool = false) {
 		allLatestPositions = fetchLatestPositions()
+		// Before the change check: links also change with signal and age, not just positions.
+		// Filter, toggle, radio and appearance changes force it; otherwise every 15 s is enough.
+		if force || Date().timeIntervalSince(lastLinkRefresh) >= Self.linkRefreshInterval {
+			rebuildLinkContent()
+		}
 		let state = visiblePositionState
 		guard force || state.key != appliedPositionStateKey else { return }
 		appliedPositionStateKey = state.key
@@ -487,22 +501,8 @@ struct MeshMapMK: View {
 						NavigationStack {
 							NodeDetail(node: node, nodeNum: selection.id, showMapLink: false)
 								.trackScreen(.nodeDetail)
+								.sheetCloseButton()
 						}
-						#if targetEnvironment(macCatalyst)
-							.overlay(alignment: .topLeading) {
-								Button {
-									selectedNode = nil
-								} label: {
-									Image(systemName: "xmark.circle.fill")
-										.font(.system(size: 34))
-									.symbolRenderingMode(.palette)
-									.foregroundStyle(.white, Color(.systemGray3))
-							}
-							.buttonStyle(.plain)
-							.padding(.top, 12)
-							.padding(.leading, 14)
-						}
-						#endif
 						.presentationDetents([.large])
 						#if !targetEnvironment(macCatalyst)
 						.presentationDragIndicator(.visible)
@@ -624,7 +624,7 @@ struct MeshMapMK: View {
 							Button(action: {
 								openWindow(id: SpatialMapScene.id, value: SpatialMapSceneKey.shared)
 							}) {
-								Image(systemName: "cube")
+								Image("custom.map.wheel")
 							}
 							.accessibilityLabel(String(localized: "Open 3D map", comment: "VoiceOver label for the button that opens the spatial map volume"))
 							.accessibilityHint(String(localized: "Shows the mesh on a terrain model in a volume.", comment: "VoiceOver hint for the button that opens the spatial map volume"))
@@ -695,6 +695,7 @@ struct MeshMapMK: View {
 			}
 			.onChange(of: accessoryManager.activeDeviceNum) {
 				syncFallbackLocation()
+				rebuildLinkContent()
 			}
 			.onChange(of: accessoryManager.isInBackground) {
 				// Foreground/background flips isMapVisible; refresh so the overlay-bearing
@@ -778,6 +779,11 @@ struct MeshMapMK: View {
 		mapWithDataHooks
 			.onChange(of: colorScheme) {
 				rebuildHillshadeOverlay()
+				rebuildTraceRouteContent()
+				rebuildLinkContent()
+			}
+			.onChange(of: showDirectLinks) {
+				rebuildLinkContent()
 			}
 			.onChange(of: offlineMapConnectivity.isNetworkAvailable) {
 				rebuildAllMapContent()
@@ -1328,6 +1334,9 @@ struct MeshMapMK: View {
 									var result = selectedTraceRoute != nil ? [] : offlineVectorOverlays
 									result += routeOverlays
 									result += tracerouteOverlays
+									// Links are hidden while a trace route is shown so the two sets of
+									// colored lines and pills can't be mixed up.
+									if selectedTraceRoute == nil { result += linkOverlays }
 									result += mapOverlays
 									result += geoJSONOverlays
 									result += geofenceOverlays
@@ -1338,6 +1347,7 @@ struct MeshMapMK: View {
 								private func combinedMapDecorations() -> [ClusterMapDecoration] {
 									guard isMapVisible else { return [] }
 									var result = routeDecorations
+									if selectedTraceRoute == nil { result += linkLabelDecorations }
 									result += tracerouteDecorations
 									result += traceRouteLabelDecorations
 									result += geoJSONDecorations
@@ -1557,42 +1567,14 @@ struct MeshMapMK: View {
 		return legs
 	}
 
-	/// Per-leg line width, dash pattern, and dash phase for a trace-route polyline, keyed to signal
-	/// tier so degraded links are legible by shape and not only by the SNR hue. `baseDash` is the
-	/// leg's normal treatment (nil for the solid forward path, a fixed rhythm for the always-dashed
-	/// return path); every tier below good gets its own dash rhythm distinct from `baseDash`, so
-	/// fair/bad/none read differently from a good leg on both the forward and return path.
-	private struct TraceRouteLineStyle {
-		let width: CGFloat
-		let dash: [NSNumber]?
-		let phase: CGFloat
-	}
-
-	private func traceRouteLineStyle(
-		snr: Float,
-		preset: ModemPresets,
-		baseWidth: CGFloat,
-		baseDash: [NSNumber]?
-	) -> TraceRouteLineStyle {
-		switch getLoRaSignalStrength(snr: snr, rssi: 0, preset: preset) {
-		case .good:
-			return TraceRouteLineStyle(width: baseWidth, dash: baseDash, phase: 0)
-		case .fair:
-			return TraceRouteLineStyle(width: baseWidth - 0.5, dash: [10, 4], phase: 0)
-		case .bad:
-			return TraceRouteLineStyle(width: max(baseWidth - 1, 1), dash: [4, 4], phase: 3)
-		case .none:
-			return TraceRouteLineStyle(width: max(baseWidth - 1.5, 1), dash: [1, 5], phase: 6)
-		}
-	}
-
-	/// Build the forward (solid) + return (dashed) polylines and origin/target markers for the
-	/// selected trace route, and the layout the hop badges and SNR labels come from. Each leg is
-	/// colored by that hop's SNR using the same signal-meter math as the LoRa signal indicator
-	/// (green/yellow/orange/red), and its width/dash rhythm varies with the same tier so signal
-	/// quality isn't encoded by hue alone. Limited to nodes with a snapshot.
+	/// Build the forward and return polylines and the origin/target markers for the selected trace
+	/// route, and the layout the hop badges and SNR labels come from. Forward is solid orange (short
+	/// dashes where the SNR is unknown) and return dashed blue, the colors of the Forward route and
+	/// Return route headings, each with a dark edge so it reads on any basemap. SNR is shown by the
+	/// labels on the legs, not the line color. Limited to nodes with a snapshot.
 	private func rebuildTraceRouteContent() {
-		let key = selectedTraceRoute.map { "\($0.id)|\($0.nodePositions.count)" } ?? "none"
+		let dark = colorScheme == .dark
+		let key = selectedTraceRoute.map { "\($0.id)|\($0.nodePositions.count)|\(dark)" } ?? "none"
 		guard key != lastTraceRouteKey else { return }
 		lastTraceRouteKey = key
 		guard let route = selectedTraceRoute else {
@@ -1605,39 +1587,54 @@ struct MeshMapMK: View {
 		var decorations: [ClusterMapDecoration] = []
 		let idKey = route.persistentModelID.hashValue
 		let modemPreset = ModemPresets(rawValue: UserDefaults.modemPreset) ?? .longFast
-		let legs = TraceRouteLegs(route: route, preset: modemPreset, lookup: { _ in nil })
-		let layout = TraceRouteMapLayout(legs: legs, positions: route.nodePositionsByNum.compactMapValues { $0.coordinate })
+		// Node names for the endpoint circles; the lines and badges only need numbers and positions.
+		let legs = TraceRouteLegs(route: route, preset: modemPreset) { num in
+			guard num != 0, num != TraceRouteLegs.unknownRepeaterNum else { return nil }
+			return router.cachedNodeInfo(id: num, context: context).map(TraceRouteLegs.NodeDetails.init(node:))
+		}
+		let positions = route.nodePositionsByNum.compactMapValues { $0.coordinate }
+		let layout = TraceRouteMapLayout(legs: legs, positions: positions)
+		let traits = UITraitCollection(userInterfaceStyle: dark ? .dark : .light)
+		let forwardColor = UIColor(TraceRouteColors.forward).resolvedColor(with: traits)
+		let backColor = UIColor(TraceRouteColors.back).resolvedColor(with: traits)
+		let casing = UIColor.black.withAlphaComponent(dark ? 0.6 : 0.45)
 
-		// One polyline per leg, colored by the SNR measured at the node it arrives at. Forward is
-		// solid, return dashed; both get thinner and more dashed as the signal drops.
 		for segment in layout.segments {
 			var seg = [segment.from, segment.to]
-			let snr = segment.snr ?? TraceRouteLegs.unknownSnr
-			let style = segment.isBack
-				? traceRouteLineStyle(snr: snr, preset: modemPreset, baseWidth: 3, baseDash: [2, 8])
-				: traceRouteLineStyle(snr: snr, preset: modemPreset, baseWidth: 4, baseDash: nil)
+			// Forward is solid unless its SNR is unknown; return is always dashed.
+			let dash: [NSNumber]? = segment.isBack ? [6, 6] : (segment.snr == nil ? [3, 6] : nil)
 			overlays.append(ClusterMapOverlay(
-				id: "traceroute-\(segment.id)-\(idKey)",
+				id: "traceroute-\(segment.id)-\(idKey)-\(dark)",
 				overlay: MKPolyline(coordinates: &seg, count: 2),
 				style: ClusterMapOverlayStyle(
-					strokeUIColor: UIColor(getSnrColor(snr: snr, preset: modemPreset)),
+					strokeUIColor: segment.isBack ? backColor : forwardColor,
 					fillUIColor: nil,
-					lineWidth: style.width,
-					lineDash: style.dash,
-					lineDashPhase: style.phase,
+					lineWidth: segment.isBack ? 3.5 : 4,
+					lineDash: dash,
 					lineCap: .round,
-					directional: true
+					directional: true,
+					casingUIColor: casing,
+					// Where both directions use a leg, each moves to its own side so both show.
+					sideOffset: layout.sharesLeg(segment) ? 4 : 0
 				)
 			))
 		}
-		let byNum = route.nodePositionsByNum
-		if let origin = byNum[route.fromNum]?.coordinate {
-			decorations.append(ClusterMapDecoration(id: "traceroute-origin-\(idKey)", coordinate: origin,
-			                                        content: AnyView(RouteEndpointMarker(color: .green))))
+		// Destination first so the origin draws on top when the two are close.
+		if let stop = legs.forward.last, let coordinate = positions[stop.num] {
+			decorations.append(ClusterMapDecoration(
+				id: "traceroute-target-\(idKey)",
+				coordinate: coordinate,
+				content: AnyView(TraceRouteEndpointMarker(stop: stop, ring: TraceRouteShareStyle.destinationRing)),
+				zPriority: TraceRouteZ.endpoint
+			))
 		}
-		if let target = byNum[route.toNum]?.coordinate {
-			decorations.append(ClusterMapDecoration(id: "traceroute-target-\(idKey)", coordinate: target,
-			                                        content: AnyView(RouteEndpointMarker(color: .red))))
+		if let stop = legs.forward.first, let coordinate = positions[stop.num] {
+			decorations.append(ClusterMapDecoration(
+				id: "traceroute-origin-\(idKey)",
+				coordinate: coordinate,
+				content: AnyView(TraceRouteEndpointMarker(stop: stop, ring: TraceRouteShareStyle.originRing)),
+				zPriority: TraceRouteZ.endpoint
+			))
 		}
 		tracerouteOverlays = overlays
 		tracerouteDecorations = decorations
@@ -1655,17 +1652,139 @@ struct MeshMapMK: View {
 			ClusterMapDecoration(
 				id: "traceroute-label-\(label.id)-\(tracerouteLayoutKey)",
 				coordinate: label.coordinate,
-				content: AnyView(TraceRouteSnrLabel(snr: label.snr, color: getSnrColor(snr: label.snr, preset: preset)))
+				content: AnyView(MapSnrLabel(snr: label.snr, color: getSnrColor(snr: label.snr, preset: preset))),
+				zPriority: TraceRouteZ.label
 			)
 		}
 		let badges = layout.visibleBadges(in: rect).map { badge in
 			ClusterMapDecoration(
 				id: "traceroute-badge-\(badge.id)-\(tracerouteLayoutKey)",
 				coordinate: badge.coordinate,
-				content: AnyView(TraceRouteHopBadge(number: badge.number, isBack: badge.isBack))
+				content: AnyView(TraceRouteHopBadge(number: badge.number, isBack: badge.isBack)),
+				zPriority: TraceRouteZ.badge
 			)
 		}
 		return labels + badges
+	}
+
+	/// Rebuild the direct link lines and pill layout when the links, their colors or their fade
+	/// changed. An unchanged line keeps its overlay object so the map doesn't redraw it.
+	private func rebuildLinkContent() {
+		lastLinkRefresh = Date()
+		let dark = colorScheme == .dark
+		let preset = ModemPresets(rawValue: UserDefaults.modemPreset) ?? .longFast
+		let links = showDirectLinks && isMapVisible ? currentLinks() : []
+		var parts = ["\(dark)", "\(preset.rawValue)"]
+		let styled = links.map { link -> StyledLink in
+			// Fade in steps so a refresh only rebuilds a line when its look changes.
+			let opacity = (link.opacity * 20).rounded() / 20
+			let pillFade = String(format: "%.2f,%.2f", (link.opacityAtA * 20).rounded() / 20, (link.opacityAtB * 20).rounded() / 20)
+			let signature = [
+				link.id,
+				link.snrAtA.map { String(format: "%.1f", $0) } ?? "-",
+				link.snrAtB.map { String(format: "%.1f", $0) } ?? "-",
+				String(format: "%.6f,%.6f,%.6f,%.6f", link.coordinateA.latitude, link.coordinateA.longitude, link.coordinateB.latitude, link.coordinateB.longitude),
+				"\(opacity)",
+				pillFade
+			].joined(separator: "|")
+			parts.append(signature)
+			return StyledLink(link: link, opacity: opacity, signature: signature)
+		}
+		let key = parts.joined(separator: ";")
+		guard key != lastLinkKey else { return }
+		lastLinkKey = key
+		guard !links.isEmpty else {
+			if !linkOverlays.isEmpty { linkOverlays = [] }
+			linkLayout = nil
+			return
+		}
+		let traits = UITraitCollection(userInterfaceStyle: dark ? .dark : .light)
+		var existing: [AnyHashable: ClusterMapOverlay] = [:]
+		for overlay in linkOverlays { existing[overlay.id] = overlay }
+		linkOverlays = styled.map { item in
+			let id = "link-\(item.signature)-\(dark)-\(preset.rawValue)"
+			if let overlay = existing[id] { return overlay }
+			var coordinates = [item.link.coordinateA, item.link.coordinateB]
+			let color = item.link.worstSnr.map { UIColor(getSnrColor(snr: $0, preset: preset)) } ?? .systemGray
+			return ClusterMapOverlay(
+				id: id,
+				overlay: MKPolyline(coordinates: &coordinates, count: 2),
+				style: ClusterMapOverlayStyle(
+					strokeUIColor: color.resolvedColor(with: traits).withAlphaComponent(item.opacity),
+					fillUIColor: nil,
+					lineWidth: 2.5,
+					// Dashed when only one direction is known.
+					lineDash: item.link.isOneWay ? [2, 7] : nil,
+					lineCap: .round,
+					level: .aboveRoads
+				)
+			)
+		}
+		linkLayout = NodeLinkMapLayout(links: links)
+	}
+
+	/// Links between nodes that hear each other directly, where both ends have a position on the
+	/// map. Two sources: nodes the connected radio heard with no hops, not over MQTT, in the last
+	/// 12 hours, and saved Neighbor Info reports from the last day that didn't come over MQTT.
+	private func currentLinks() -> [NodeLink] {
+		guard let connectedNum = accessoryManager.activeDeviceNum, connectedNum != 0 else { return [] }
+		let now = Date()
+		let epoch = Date.distantPast
+		// The radio's own direct links.
+		let directCutoff = now.addingTimeInterval(-NodeLinks.maxAge)
+		var nodes = (try? context.fetch(FetchDescriptor<NodeInfoEntity>(
+			predicate: #Predicate<NodeInfoEntity> { $0.hopsAway == 0 && $0.viaMqtt == false && ($0.lastHeard ?? epoch) >= directCutoff }
+		))) ?? []
+		// Neighbor Info reports.
+		let reports = NodeLinks.reportRows(context: context, now: now)
+		// Nodes named in reports that aren't already loaded, for their positions.
+		let loaded = Set(nodes.map(\.num))
+		let missing = Array(Set(reports.flatMap { [$0.reporter, $0.neighbor] }).union([connectedNum]).subtracting(loaded))
+		if !missing.isEmpty {
+			nodes += (try? context.fetch(FetchDescriptor<NodeInfoEntity>(predicate: #Predicate<NodeInfoEntity> { missing.contains($0.num) }))) ?? []
+		}
+		// Ignored nodes aren't on the map. With a filter or search on, only draw links between
+		// nodes the filter still shows; the connected radio always counts as shown.
+		nodes = nodes.filter { !$0.ignored }
+		if filters.isFiltering || !filters.searchText.isEmpty {
+			let shown = Set(filteredPositions(from: mapEligiblePositions).compactMap { $0.nodePosition?.num })
+			nodes = nodes.filter { $0.num == connectedNum || shown.contains($0.num) }
+		}
+		var positions: [Int64: CLLocationCoordinate2D] = [:]
+		var rows: [NodeLinkNodeRow] = []
+		for node in nodes {
+			guard positions[node.num] == nil,
+				  let coordinate = node.latestPosition.flatMap(linkCoordinate(for:))
+			else { continue }
+			positions[node.num] = coordinate
+			// SNR is checked by the link builder.
+			rows.append(NodeLinkNodeRow(num: node.num, hopsAway: node.hopsAway, viaMqtt: node.viaMqtt, snr: node.snr, lastHeard: node.lastHeard))
+		}
+		let observations = NodeLinks.directObservations(connectedNum: connectedNum, nodes: rows, now: now)
+			+ NodeLinks.reportedObservations(reports, now: now)
+		return NodeLinks.links(from: observations, positions: positions, now: now)
+	}
+
+	/// Where a node's pin is drawn, so a link ends on it; nil when the map hides that position.
+	private func linkCoordinate(for position: PositionEntity) -> CLLocationCoordinate2D? {
+		if position.isPreciseLocation { return position.nodeCoordinate }
+		guard position.isReducedPrecision, !preciseLocationsOnly else { return nil }
+		return position.fuzzedNodeCoordinate
+	}
+
+	/// SNR pills for the direct links that fit at the current zoom.
+	private var linkLabelDecorations: [ClusterMapDecoration] {
+		guard let layout = linkLayout, let region = visibleRegion else { return [] }
+		let rect = TraceRouteMapLayout.mapRect(for: region)
+		let preset = ModemPresets(rawValue: UserDefaults.modemPreset) ?? .longFast
+		return layout.visibleLabels(in: rect).map { label in
+			ClusterMapDecoration(
+				id: "link-label-\(label.id)",
+				coordinate: label.coordinate,
+				content: AnyView(MapSnrLabel(snr: label.snr, color: getSnrColor(snr: label.snr, preset: preset)).opacity(label.opacity)),
+				zPriority: TraceRouteZ.linkLabel
+			)
+		}
 	}
 
 	/// Center/zoom the camera to fit the selected trace route's nodes. Drives the MKMapView directly
@@ -2036,11 +2155,28 @@ private struct MeshMapMKNodePin: View, Equatable {
 	}
 }
 
+/// A direct link with the fade it is drawn at and the signature its overlay is keyed by.
+private struct StyledLink {
+	let link: NodeLink
+	let opacity: Double
+	let signature: String
+}
+
 // MARK: - Trace route hop badges and SNR labels
 
-/// Numbered badge for a trace route relay. It sits up and to the right of the node on the way out
-/// (filled), and down and to the right on the way back (outlined, like the dashed return line), so
-/// a node on both paths shows both numbers.
+/// Stacking order for the trace route markers: all above the node pins, endpoints on top, then
+/// the hop badges, then the SNR labels.
+private enum TraceRouteZ {
+	/// Direct link pills, under the trace route markers (the two are never shown together).
+	static let linkLabel = MKAnnotationViewZPriority(rawValue: 970)
+	static let label = MKAnnotationViewZPriority(rawValue: 980)
+	static let badge = MKAnnotationViewZPriority(rawValue: 990)
+	static let endpoint = MKAnnotationViewZPriority.max
+}
+
+/// Numbered badge for a trace route relay, in the color of its direction: filled orange on the way
+/// out, sitting up and to the right of the node, and outlined blue on the way back, down and to
+/// the right. A node on both paths shows both numbers.
 private struct TraceRouteHopBadge: View {
 	let number: Int
 	let isBack: Bool
@@ -2049,35 +2185,29 @@ private struct TraceRouteHopBadge: View {
 		Text(verbatim: "\(number)")
 			.font(.system(size: 11, weight: .bold, design: .rounded))
 			.monospacedDigit()
-			.foregroundStyle(isBack ? Color.black : Color.white)
+			// Black on the orange: white on it is too faint for digits this small.
+			.foregroundStyle(isBack ? Color.primary : Color.black)
 			.frame(minWidth: 18, minHeight: 18)
-			.background(Circle().fill(isBack ? Color.white : Color.black.opacity(0.85)))
+			.background(Circle().fill(isBack ? Color(UIColor.systemBackground) : TraceRouteColors.forward))
 			.overlay(
-				Circle().strokeBorder(
-					isBack ? Color.black : Color.white,
-					style: StrokeStyle(lineWidth: 1.5, dash: isBack ? [2, 2] : [])
-				)
+				Circle().strokeBorder(isBack ? TraceRouteColors.back : Color.white, lineWidth: isBack ? 2 : 1.5)
 			)
+			.shadow(color: .black.opacity(0.35), radius: 1.5, y: 0.5)
 			.padding(.leading, 30)
 			.padding(isBack ? .top : .bottom, 30)
 			.accessibilityHidden(true)
 	}
 }
 
-/// SNR of one trace route leg, drawn on the line in the leg's color.
-private struct TraceRouteSnrLabel: View {
-	let snr: Float
-	let color: Color
+/// A trace route's origin or destination: the node's short name in a circle of its color, with the
+/// green (origin) or white (destination) ring used on the share image and in the hop chains.
+private struct TraceRouteEndpointMarker: View {
+	let stop: TraceRouteStop
+	let ring: Color
 
 	var body: some View {
-		Text("\(snr.formatted(.number.precision(.fractionLength(1)))) dB")
-			.font(.system(size: 10, weight: .semibold))
-			.monospacedDigit()
-			.foregroundStyle(.black)
-			.padding(.horizontal, 5)
-			.padding(.vertical, 1.5)
-			.background(Capsule().fill(color))
-			.overlay(Capsule().strokeBorder(.white, lineWidth: 1))
+		TraceRouteShareNodeCircle(stop: stop, size: 28, ring: ring)
+			.shadow(color: .black.opacity(0.5), radius: 3, y: 1)
 			.accessibilityHidden(true)
 	}
 }

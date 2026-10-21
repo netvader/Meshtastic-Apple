@@ -70,7 +70,6 @@ enum ScreenName: String, CaseIterable {
 	case security = "Security Config"
 	case storeAndForward = "Store and Forward Config"
 	case telemetry = "Telemetry Config"
-	case trafficManagement = "Traffic Management Config"
 	case debugLogs = "Logs"
 	case traceRoutes = "Trace Routes"
 	case appFiles = "App Files"
@@ -93,6 +92,7 @@ enum ScreenName: String, CaseIterable {
 	case importDeviceProfile = "Import Device Profile"
 	case logDetail = "Log Detail"
 	case mapDataFiles = "Map Data Files"
+	case mqttTopicFinder = "MQTT Topic Finder"
 	case routeRecordingDetails = "Route Recording Details"
 
 	// MARK: Data browser
@@ -123,6 +123,7 @@ enum ScreenName: String, CaseIterable {
 	case coverageEstimate = "Coverage Estimate"
 	case positionDetail = "Position Detail"
 	case spatialMap = "Spatial Map"
+	case showcase = "Hardware Showcase"
 
 	// MARK: Node detail
 

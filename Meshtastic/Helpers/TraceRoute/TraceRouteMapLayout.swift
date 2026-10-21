@@ -70,18 +70,28 @@ struct TraceRouteMapLayout {
 			+ (legs.back.count > 2 ? Self.badges(for: legs.back, isBack: true, positions: positions) : [])
 		labels = segments.compactMap { segment in
 			guard let snr = segment.snr else { return nil }
-			let shared = segments.contains { $0.isBack != segment.isBack && $0.fromNum == segment.toNum && $0.toNum == segment.fromNum }
-			let fraction = shared ? Self.sharedSegmentLabelFraction : 0.5
+			let fraction = Self.sharesLeg(segment, in: segments) ? Self.sharedSegmentLabelFraction : 0.5
 			let from = MKMapPoint(segment.from), to = MKMapPoint(segment.to)
 			let point = MKMapPoint(x: from.x + (to.x - from.x) * fraction, y: from.y + (to.y - from.y) * fraction)
 			return Label(id: segment.id, isBack: segment.isBack, snr: snr, coordinate: point.coordinate, length: Self.distance(from, to))
 		}
 	}
 
+	/// Whether the other direction also uses this segment's leg, so the two lines need pushing
+	/// apart to both stay visible.
+	func sharesLeg(_ segment: Segment) -> Bool {
+		Self.sharesLeg(segment, in: segments)
+	}
+
+	private static func sharesLeg(_ segment: Segment, in segments: [Segment]) -> Bool {
+		segments.contains { $0.isBack != segment.isBack && $0.fromNum == segment.toNum && $0.toNum == segment.fromNum }
+	}
+
 	/// Badges that don't crowd each other in `rect`. Forward and return badges sit on opposite
-	/// sides of a node, so each direction is thinned on its own.
-	func visibleBadges(in rect: MKMapRect) -> [Badge] {
-		let minDistance = rect.width * Self.badgeMinSeparationFraction
+	/// sides of a node, so each direction is thinned on its own. `separationFraction` replaces
+	/// the default share of the visible width, for maps drawn much smaller than the share card's.
+	func visibleBadges(in rect: MKMapRect, separationFraction: Double = badgeMinSeparationFraction) -> [Badge] {
+		let minDistance = rect.width * separationFraction
 		let forward = Self.thinned(badges.filter { !$0.isBack }, coordinate: \.coordinate, minDistance: minDistance)
 		let back = Self.thinned(badges.filter { $0.isBack }, coordinate: \.coordinate, minDistance: minDistance)
 		return forward + back
@@ -135,12 +145,12 @@ struct TraceRouteMapLayout {
 	}
 
 	/// Straight-line distance in map points (`MKMapPoint.distance(to:)` returns meters).
-	private static func distance(_ a: MKMapPoint, _ b: MKMapPoint) -> Double {
+	static func distance(_ a: MKMapPoint, _ b: MKMapPoint) -> Double {
 		hypot(b.x - a.x, b.y - a.y)
 	}
 
 	/// Keeps items in order, dropping any closer than `minDistance` map points to one already kept.
-	private static func thinned<T>(_ items: [T], coordinate: KeyPath<T, CLLocationCoordinate2D>, minDistance: Double) -> [T] {
+	static func thinned<T>(_ items: [T], coordinate: KeyPath<T, CLLocationCoordinate2D>, minDistance: Double) -> [T] {
 		var kept: [T] = []
 		var keptPoints: [MKMapPoint] = []
 		for item in items {

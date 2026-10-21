@@ -196,6 +196,7 @@ disabled until all three are complete and well formed. A malformed entry is show
 red. <strong>DNS is optional</strong> and may be left blank, which stores it as unset.</p>
 <h3>Position</h3>
 <p>GPS update interval, position precision, and smart position broadcasting. Enable <strong>Broadcast Position</strong> to share your location with the mesh.</p>
+<p>The GPS pin settings (the receive, transmit and enable GPIOs) are for boards where you wire up the GPS yourself. On a board whose maker builds the GPS in, they are hidden, here and in settings search.</p>
 <p>The <strong>GPS Mode</strong> selector (Enabled / Disabled / Not Present) is the single source of truth for the GPS state that the app writes to the radio. The older on/off <code>gpsEnabled</code> field it replaced is deprecated: the app no longer writes it, but still reads it from older firmware so existing devices keep working. No action is needed when upgrading — your GPS setting is preserved.</p>
 <h3>Power</h3>
 <p>Battery saving profiles, sleep modes, and minimum wake time. Critical for solar-powered router nodes.</p>
@@ -270,15 +271,10 @@ screen may briefly appear before the radio finishes identifying itself.</p>
 <td>Telemetry</td>
 <td>Device, environment, and air-quality sensor reporting.</td>
 </tr>
-<tr>
-<td>Traffic Management</td>
-<td>Mesh traffic optimization — position deduplication, rate limiting, and unknown-packet filtering. Requires firmware 2.8.0+.</td>
-</tr>
 </tbody>
 </table>
-<h3>Traffic Management</h3>
-<p>The Traffic Management module helps reduce unnecessary mesh traffic and improve network efficiency. It is available on nodes running firmware <strong>2.8.0 or later</strong>.</p>
-<p>The screen opens with a placement assessment: how many nodes this radio heard directly (over RF, within the last two hours), and whether that makes the module worth enabling. Traffic management pays off on a well-placed node with many direct neighbors — 50 or more heard in that window, ideally around 200. One transmission from such a node reaches most of them at once, so cutting hop counts on the chattiest packets removes the retransmission storm that follows each broadcast. On a node with a handful of direct neighbors it has little to police. Each feature is enabled implicitly by a non-zero value — turning a section's toggle off (or the master <strong>Enabled</strong> switch) clears its values and disables that feature on the radio. Turning a feature on starts its interval at the firmware default rather than zero, so saving right away enables it.</p>
+<h3>Mesh Beacon</h3>
+<p>A mesh beacon lets nearby radios find your mesh and join it. It is available on nodes running firmware <strong>2.8.0 or later</strong>, and needs a LoRa region set first. The beacon always uses the radio's own region, and offers the radio's own modem preset.</p>
 <table>
 <thead>
 <tr>
@@ -288,63 +284,36 @@ screen may briefly appear before the radio finishes identifying itself.</p>
 </thead>
 <tbody>
 <tr>
-<td>Enabled</td>
-<td>Turns the module on or off.</td>
+<td>Listen for Beacons</td>
+<td>Hear beacons from other meshes and show them in discovery.</td>
 </tr>
 <tr>
-<td><strong>Position Deduplication</strong></td>
-<td></td>
+<td>Broadcast a Beacon</td>
+<td>Send a beacon from this radio. The settings below appear only while this is on.</td>
 </tr>
 <tr>
-<td>Position Dedup</td>
-<td>Drop repeated position broadcasts.</td>
+<td>Message</td>
+<td>Short text sent with each beacon, up to 60 bytes.</td>
 </tr>
 <tr>
-<td>Minimum Interval</td>
-<td>Positions from the same node arriving sooner than this are dropped. The firmware default is five hours.</td>
+<td>Channel</td>
+<td>The channel listeners are offered to join. It must be one of this radio's channels.</td>
 </tr>
 <tr>
-<td><strong>NodeInfo Direct Response</strong></td>
-<td></td>
+<td>Frequency Slot</td>
+<td>The slot listeners should tune to for the offered channel. Leave it empty and they work it out from the region, preset and channel name, which is right for most meshes. Set it only if your mesh uses a different slot.</td>
 </tr>
 <tr>
-<td>Direct Response</td>
-<td>Answer NodeInfo requests from the local cache instead of flooding the mesh.</td>
+<td>Interval</td>
+<td>How often the beacon is sent. The minimum is one hour.</td>
 </tr>
 <tr>
-<td>Max Hops</td>
-<td>Only answer requestors within this many hops, 1 to 3. The radio's role caps the effective value: routers allow up to 3, plain clients answer direct requestors only.</td>
-</tr>
-<tr>
-<td><strong>Rate Limiting</strong></td>
-<td></td>
-</tr>
-<tr>
-<td>Rate Limiting</td>
-<td>Throttle nodes that send too many packets.</td>
-</tr>
-<tr>
-<td>Window</td>
-<td>The time window packets are counted over.</td>
-</tr>
-<tr>
-<td>Max Packets</td>
-<td>The most packets one node may send per window.</td>
-</tr>
-<tr>
-<td><strong>Unknown Packet Handling</strong></td>
-<td></td>
-</tr>
-<tr>
-<td>Drop Unknown</td>
-<td>Drop packets that cannot be decrypted.</td>
-</tr>
-<tr>
-<td>Threshold</td>
-<td>How many per window before the sender is dropped.</td>
+<td>Broadcast On</td>
+<td>Where the beacon is sent. Each target is a channel, a preset and an optional frequency slot, and gets its own copy of the beacon. A target whose channel is no longer on the radio is marked and must be changed before saving.</td>
 </tr>
 </tbody>
 </table>
+<p>A frequency slot must be within the range for the region and preset; the screen shows the range when a value is outside it.</p>
 <h2>Tools</h2>
 <p>The <strong>Tools</strong> entry appears only on iPhones with NFC hardware running iOS 18 or later; it is hidden on iPads, Mac Catalyst, and any device without an NFC radio.</p>
 <p>It contains an <strong>NFC Tags</strong> section:</p>

@@ -22,6 +22,7 @@ struct SpatialMapWindow: View {
 	@Environment(\.physicalMetrics) private var metrics
 	@StateObject private var nodeFilters = NodeFilterParameters()
 	@State private var model = SpatialMapModel()
+	@ObservedObject private var connectivity = OfflineMapConnectivityMonitor.shared
 	@State private var scene: SpatialSceneController
 	@State private var traffic: SpatialTrafficController
 	@AppStorage("mapLayer") private var mapLayer: MapLayer = .standard
@@ -30,8 +31,8 @@ struct SpatialMapWindow: View {
 	/// Shared with the 2D map's Contour Lines setting.
 	@AppStorage("meshMapShowContours") private var showContours = false
 	@AppStorage("spatialMapShowLabels") private var showLabels = true
-	@AppStorage("spatialMapShowLinks") private var showLinks = true
 	@AppStorage("spatialMapShowTraffic") private var showTraffic = true
+	@AppStorage("spatialMapShowDirectLinks") private var showLinks = false
 	@AppStorage("spatialMapAutoTerrain") private var autoTerrain = true
 	@AppStorage("spatialMapCoverage") private var coverageMode: SpatialCoverageMode = .selected
 	@AppStorage("spatialMapCoverageOpacity") private var coverageOpacity = 0.55
@@ -49,7 +50,7 @@ struct SpatialMapWindow: View {
 	}
 
 	var body: some View {
-		SpatialMapView(model: model, scene: scene, traffic: traffic, preset: preset, showLinks: showLinks) { nodeNum in
+		SpatialMapView(model: model, scene: scene, traffic: traffic, preset: preset) { nodeNum in
 			showInMainWindow("meshtastic:///nodes?nodenum=\(nodeNum)")
 		} onCoverage: { nodeNum, action in
 			handleCoverage(action, nodeNum: nodeNum)
@@ -91,6 +92,9 @@ struct SpatialMapWindow: View {
 		.onChange(of: coverageOpacity, initial: true) { _, opacity in
 			model.coverageOpacity = Float(opacity)
 		}
+		.onChange(of: connectivity.isNetworkAvailable) { wasAvailable, isAvailable in
+			if !wasAvailable && isAvailable { model.retryImagery() }
+		}
 		.onChange(of: appState.spatialMapFocus?.id) {
 			claimFocus()
 		}
@@ -100,10 +104,14 @@ struct SpatialMapWindow: View {
 			}
 		}
 		.onAppear {
+			SpatialTerrainKeeper.shared.volumeAppeared()
 			claimFocus()
 			if !Self.mainWindowIsOpen {
 				dismissWindow(id: SpatialMapScene.id)
 			}
+		}
+		.onDisappear {
+			SpatialTerrainKeeper.shared.volumeDisappeared()
 		}
 		.onReceive(NotificationCenter.default.publisher(for: UIScene.didDisconnectNotification)) { _ in
 			if !Self.mainWindowIsOpen {
@@ -111,7 +119,48 @@ struct SpatialMapWindow: View {
 			}
 		}
 		.trackScreen(.spatialMap)
+		#if DEBUG
+		.task { await showRouteForScreenshots() }
+		#endif
 	}
+
+	#if DEBUG
+	/// Simulator screenshots: `--meshtastic-spatial-route [index]` flies the newest trace route
+	/// with positions (or the one at `index`) at high speed and leaves it drawn.
+	/// `--meshtastic-spatial-route-zoom` zooms in on its first relay first, and
+	/// `--meshtastic-spatial-tilt <degrees>` tips the table toward the camera.
+	private func showRouteForScreenshots() async {
+		let arguments = ProcessInfo.processInfo.arguments
+		tiltForScreenshots(arguments)
+		guard let flagIndex = arguments.firstIndex(of: "--meshtastic-spatial-route") else { return }
+		let index = arguments.indices.contains(flagIndex + 1) ? Int(arguments[flagIndex + 1]) ?? 0 : 0
+		var waited = 0
+		while model.routes.count <= index || model.placement == nil, waited < 60 {
+			guard (try? await Task.sleep(for: .seconds(1))) != nil else { return }
+			waited += 1
+		}
+		guard model.routes.indices.contains(index) else { return }
+		let route = model.routes[index]
+		Logger.services.info("🧪 [Spatial] Showing route \(route.id, privacy: .public) (launch argument)")
+		if arguments.contains("--meshtastic-spatial-route-zoom"), let relay = route.layout.badges.first?.num ?? route.layout.targetNum {
+			model.zoomIn(on: relay)
+			guard (try? await Task.sleep(for: .seconds(4))) != nil else { return }
+		}
+		model.shownRoute = route
+		traffic.startFlyover(route, speed: 10)
+	}
+
+	/// The simulator's camera looks at the table edge on; tip it toward the viewer.
+	private func tiltForScreenshots(_ arguments: [String]) {
+		if let tiltIndex = arguments.firstIndex(of: "--meshtastic-spatial-tilt"), arguments.indices.contains(tiltIndex + 1),
+		   let degrees = Float(arguments[tiltIndex + 1]) {
+			scene.root.orientation = simd_quatf(angle: degrees * .pi / 180, axis: [1, 0, 0])
+			// Smaller and lifted so the near edge, now lower, stays inside the volume.
+			scene.root.scale = SIMD3(repeating: 0.75)
+			scene.model.position.y += 0.45 * sin(degrees * .pi / 180)
+		}
+	}
+	#endif
 
 	private func points(_ meters: Double) -> CGFloat {
 		metrics.convert(CGFloat(meters), from: .meters)
@@ -121,8 +170,8 @@ struct SpatialMapWindow: View {
 		model.connectedNodeNum = accessoryManager.activeDeviceNum
 		traffic.connectedNodeNum = accessoryManager.activeDeviceNum
 		traffic.preset = preset
-		model.showLinks = showLinks
 		model.showContours = showContours
+		model.showLinks = showLinks
 		model.autoDownloadTerrain = autoTerrain
 		model.coverageMode = coverageMode
 		model.refresh(context: context, filters: nodeFilters, preciseOnly: preciseLocationsOnly, layer: mapLayer, dark: darkMap)
@@ -152,6 +201,8 @@ struct SpatialMapWindow: View {
 		}
 	}
 
+	/// Opens the showcase and, once it is showing, closes this volume: the showcase is one space,
+	/// and the map moves onto its desk.
 	private func claimFocus() {
 		guard let nodeNum = appState.claimSpatialMapFocus() else { return }
 		model.focus(on: nodeNum)
@@ -179,7 +230,7 @@ struct SpatialMapWindow: View {
 	}
 }
 
-/// The volume's bottom toolbar: map layer, what to show, flyover, and the node count.
+/// The volume's bottom toolbar: map layer, what to show, trace routes, and the node count.
 struct SpatialMapOrnament: View {
 	let model: SpatialMapModel
 	let traffic: SpatialTrafficController
@@ -198,9 +249,15 @@ struct SpatialMapOrnament: View {
 	var body: some View {
 		HStack(spacing: 10) {
 			Menu {
-				Picker(String(localized: "Map Layer", comment: "Spatial map: picker for the image draped over the terrain"), selection: $mapLayer) {
-					ForEach([MapLayer.standard, .hybrid, .satellite, .offline], id: \.self) { layer in
-						Text(layer == .offline ? String(localized: "Terrain Shading", comment: "Spatial map layer: hillshade only, no map imagery") : layer.localized).tag(layer)
+				// Offline is offered only where a downloaded basemap covers the map. The setting is
+				// shared with the 2D map, so a stored Offline shows as Standard elsewhere.
+				let offlineAvailable = model.offlineLayerAvailable(regions: offline.regions)
+				Picker(String(localized: "Map Layer", comment: "Spatial map: picker for the image draped over the terrain"), selection: Binding(
+					get: { SpatialOfflineMap.buildLayer(mapLayer, offlineAvailable: offlineAvailable) },
+					set: { mapLayer = $0 }
+				)) {
+					ForEach(SpatialOfflineMap.layers(offlineAvailable: offlineAvailable), id: \.self) { layer in
+						Text(layer.localized).tag(layer)
 					}
 				}
 				Toggle(isOn: $darkMap) {
@@ -216,40 +273,20 @@ struct SpatialMapOrnament: View {
 			} label: {
 				Image(systemName: "map")
 			}
+			.help(String(localized: "Map layer", comment: "VoiceOver label for the spatial map layer menu"))
 			.accessibilityLabel(String(localized: "Map layer", comment: "VoiceOver label for the spatial map layer menu"))
 
 			Toggle(isOn: $showLabels) { Image(systemName: "tag") }
+				.help(String(localized: "Node labels", comment: "VoiceOver label for the spatial map labels toggle"))
 				.accessibilityLabel(String(localized: "Node labels", comment: "VoiceOver label for the spatial map labels toggle"))
-			Toggle(isOn: $showLinks) { Image(systemName: "point.3.connected.trianglepath.dotted") }
-				.accessibilityLabel(String(localized: "Traceroute links", comment: "VoiceOver label for the spatial map links toggle"))
+			Toggle(isOn: $showLinks) { Image(systemName: "link") }
+				.help(String(localized: "Direct Links", comment: "Map settings toggle that draws lines between nodes that hear each other directly."))
+				.accessibilityLabel(String(localized: "Direct Links", comment: "Map settings toggle that draws lines between nodes that hear each other directly."))
 			Toggle(isOn: $showTraffic) { Image(systemName: "dot.radiowaves.left.and.right") }
+				.help(String(localized: "Live traffic", comment: "VoiceOver label for the spatial map traffic toggle"))
 				.accessibilityLabel(String(localized: "Live traffic", comment: "VoiceOver label for the spatial map traffic toggle"))
 
-			if traffic.isFlying {
-				Button {
-					traffic.stopFlyover()
-				} label: {
-					Image(systemName: "stop.fill")
-				}
-				.accessibilityLabel(String(localized: "Stop flyover", comment: "VoiceOver label to stop the spatial map traceroute flyover"))
-			} else {
-				Menu {
-					if model.routes.isEmpty {
-						Text("No traceroutes with positions", comment: "Spatial map: flyover menu is empty")
-					}
-					ForEach(model.routes.prefix(12)) { route in
-						Button {
-							traffic.startFlyover(route)
-						} label: {
-							Text(verbatim: "\(route.targetName) · \(route.time?.formatted(date: .abbreviated, time: .shortened) ?? "")")
-						}
-					}
-				} label: {
-					Image(systemName: "airplane")
-				}
-				.accessibilityLabel(String(localized: "Fly a traceroute", comment: "VoiceOver label for the spatial map flyover menu"))
-				.disabled(model.routes.isEmpty)
-			}
+			traceRoutes
 
 			terrainDownload
 
@@ -259,6 +296,7 @@ struct SpatialMapOrnament: View {
 				Image(systemName: "minus.magnifyingglass")
 			}
 			.disabled(model.zoom <= 1.01)
+			.help(String(localized: "Zoom out", comment: "Spatial map: show a wider area on the table"))
 			.accessibilityLabel(String(localized: "Zoom out", comment: "Spatial map: show a wider area on the table"))
 			Button {
 				model.setZoom(model.clampedZoom(model.zoom * 2))
@@ -266,6 +304,7 @@ struct SpatialMapOrnament: View {
 				Image(systemName: "plus.magnifyingglass")
 			}
 			.disabled(model.clampedZoom(model.zoom * 2) <= model.zoom + 0.01)
+			.help(String(localized: "Zoom in", comment: "Spatial map: show a smaller area on the table in more detail"))
 			.accessibilityLabel(String(localized: "Zoom in", comment: "Spatial map: show a smaller area on the table in more detail"))
 			if model.zoom > 1.01 {
 				Button {
@@ -284,6 +323,7 @@ struct SpatialMapOrnament: View {
 				.accessibilityValue(Text(verbatim: "\(model.zoom.formatted(.number.precision(.fractionLength(0...1))))×"))
 			}
 
+
 			Divider().frame(height: 20)
 
 			HStack(spacing: 6) {
@@ -295,13 +335,18 @@ struct SpatialMapOrnament: View {
 					Text("· \(model.outsideCount) outside", comment: "Spatial map: nodes too far away to fit on the terrain")
 						.foregroundStyle(.secondary)
 				}
+				if model.shownRoute != nil {
+					SpatialRouteLegend()
+				}
 				if !model.coverageLegend.isEmpty {
 					SpatialCoverageLegendStrip(entries: model.coverageLegend)
 				}
-				if model.textureSource == .offline, mapLayer != .offline {
+				if model.imageryUnavailable {
 					Image(systemName: "wifi.slash")
 						.foregroundStyle(.secondary)
-						.help(String(localized: "Map imagery unavailable; showing terrain shading", comment: "Spatial map: the Apple map image could not be fetched"))
+						.help(model.textureSource == .offlineMap
+							? String(localized: "Map imagery unavailable; showing the offline map", comment: "Spatial map: the Apple map image could not be fetched, so the downloaded offline map is shown")
+							: String(localized: "Map imagery unavailable; showing terrain shading", comment: "Spatial map: the Apple map image could not be fetched"))
 				}
 			}
 			.font(.caption)
@@ -321,9 +366,45 @@ struct SpatialMapOrnament: View {
 		}
 	}
 
-	/// Progress while terrain downloads. Otherwise, when the terrain doesn't cover the box: the
-	/// Download Terrain button if automatic downloads are off or have given up on this area, a
-	/// retry after an automatic download failed, or why terrain can't be downloaded.
+	/// The trace route menu: pick a route to fly it and leave it drawn. Picking another replaces it.
+	/// While one is shown, a clear button sits beside the menu.
+	@ViewBuilder private var traceRoutes: some View {
+		Menu {
+			if model.routes.isEmpty {
+				Text("No traceroutes with positions", comment: "Spatial map: trace route menu is empty")
+			}
+			let now = Date.now
+			ForEach(model.routes) { route in
+				let entry = SpatialRouteMenuEntry(route: route, now: now)
+				Button {
+					model.shownRoute = route
+					traffic.startFlyover(route)
+				} label: {
+					Text(verbatim: entry.title)
+					Text(verbatim: entry.subtitle)
+				}
+			}
+		} label: {
+			Image(systemName: "point.3.connected.trianglepath.dotted")
+		}
+		.help(String(localized: "Trace routes", comment: "VoiceOver label for the spatial map trace route menu"))
+		.accessibilityLabel(String(localized: "Trace routes", comment: "VoiceOver label for the spatial map trace route menu"))
+		.accessibilityHint(String(localized: "Pick a trace route to fly along it and leave it drawn on the map.", comment: "VoiceOver hint for the spatial map trace route menu"))
+		if model.shownRoute != nil {
+			Button {
+				traffic.stopFlyover()
+				model.shownRoute = nil
+			} label: {
+				Image(systemName: "xmark")
+			}
+			.help(String(localized: "Clear trace route", comment: "VoiceOver label for the clear trace route button"))
+			.accessibilityLabel(String(localized: "Clear trace route", comment: "VoiceOver label for the clear trace route button"))
+		}
+	}
+
+	/// Progress while the offline map downloads. Otherwise, when streets and terrain don't cover the
+	/// box: the Download Terrain button if automatic downloads are off or have given up on this
+	/// area, a retry after an automatic download failed, or why it can't be downloaded.
 	@ViewBuilder private var terrainDownload: some View {
 		if model.isDownloadingTerrain {
 			HStack(spacing: 6) {
@@ -338,6 +419,7 @@ struct SpatialMapOrnament: View {
 				} label: {
 					Image(systemName: "xmark.circle")
 				}
+				.help(String(localized: "Cancel terrain download", comment: "VoiceOver label to stop the spatial map terrain download"))
 				.accessibilityLabel(String(localized: "Cancel terrain download", comment: "VoiceOver label to stop the spatial map terrain download"))
 			}
 			.accessibilityElement(children: .contain)
@@ -351,6 +433,7 @@ struct SpatialMapOrnament: View {
 					} label: {
 						Image(systemName: "arrow.clockwise")
 					}
+					.help(String(localized: "Retry terrain download", comment: "VoiceOver label to retry the spatial map terrain download after it failed"))
 					.accessibilityLabel(String(localized: "Retry terrain download", comment: "VoiceOver label to retry the spatial map terrain download after it failed"))
 				} else if !autoTerrain || model.autoDownloadGaveUp(on: target) {
 					Button {
@@ -359,6 +442,7 @@ struct SpatialMapOrnament: View {
 						Label(String(localized: "Download Terrain", comment: "Spatial map: button that downloads elevation data so the volume shows relief"), systemImage: "arrow.down.circle")
 							.labelStyle(.titleAndIcon)
 					}
+					.help(String(localized: "Downloads elevation data so the map shows hills and valleys.", comment: "VoiceOver hint for the spatial map terrain download button"))
 					.accessibilityHint(String(localized: "Downloads elevation data so the map shows hills and valleys.", comment: "VoiceOver hint for the spatial map terrain download button"))
 					.confirmationDialog(
 						String(localized: "Download terrain for this area?", comment: "Spatial map: title of the terrain download confirmation"),
@@ -378,6 +462,8 @@ struct SpatialMapOrnament: View {
 				case .tooLarge:
 					caption(String(localized: "The mesh is too spread out to download terrain for all of it.", comment: "Spatial map: the area around the mesh is over the per-map download limit"))
 				}
+			} else if model.streetsLeftOut {
+				caption(String(localized: "The street map for the mesh is over the per-map limit, so only terrain was downloaded.", comment: "Spatial map: the offline map kept for the mesh has terrain but no streets because the street map is too large"))
 			}
 		}
 	}
@@ -417,7 +503,31 @@ struct SpatialMapOrnament: View {
 		let style = Measurement<UnitLength>.FormatStyle(width: .abbreviated, usage: .road, numberFormatStyle: .number.precision(.fractionLength(0)))
 		let size = "\(Measurement(value: area.width, unit: UnitLength.meters).formatted(style)) × \(Measurement(value: area.height, unit: UnitLength.meters).formatted(style))"
 		let bytes = ByteCountFormatter.string(fromByteCount: SpatialTerrainAutoDecision.estimatedBytes(target), countStyle: .file)
-		return String(localized: "Downloads about \(bytes) of elevation data for a \(size) area around the mesh.", comment: "Spatial map: terrain download confirmation; the arguments are the download size, e.g. 40 MB, and the area's width × height, e.g. 98 km × 104 km")
+		return String(localized: "Downloads about \(bytes) of street map and elevation data for a \(size) area around the mesh.", comment: "Spatial map: offline map download confirmation; the arguments are the download size, e.g. 40 MB, and the area's width × height, e.g. 98 km × 104 km")
+	}
+}
+
+/// The route colors in the ornament while a route is shown: solid orange out, dashed blue back.
+struct SpatialRouteLegend: View {
+	var body: some View {
+		HStack(spacing: 4) {
+			Divider().frame(height: 14)
+			line(dashed: false, color: TraceRouteColors.forward)
+			Text("Forward route", comment: "Trace route timeline: heading for the path towards the target")
+			line(dashed: true, color: TraceRouteColors.back)
+			Text("Return route", comment: "Trace route timeline: heading for the path back from the target")
+		}
+		.accessibilityElement(children: .combine)
+	}
+
+	private func line(dashed: Bool, color: Color) -> some View {
+		Path { path in
+			path.move(to: CGPoint(x: 1, y: 3))
+			path.addLine(to: CGPoint(x: 17, y: 3))
+		}
+		.stroke(color, style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: dashed ? [3, 3] : []))
+		.frame(width: 18, height: 6)
+		.environment(\.colorScheme, .dark)
 	}
 }
 

@@ -12,9 +12,6 @@ import MeshtasticProtobufs
 import SwiftUI
 import RegexBuilder
 import OSLog
-#if canImport(ActivityKit)
-import ActivityKit
-#endif
 
 // Simple extension to concisely pass values through a has_XXX boolean check
 fileprivate extension Bool {
@@ -470,6 +467,8 @@ actor MeshPackets {
 		// One deadline for the pass, not one per collection: two three-second budgets would
 		// be a six-second burst, which is the thing being bounded.
 		let deadline = ContinuousClock.now + Self.evictionBudget
+		// At most a couple of thousand small rows; the commit below picks the deletes up.
+		pruneNeighborLinks()
 		await evictInChunks(until: deadline) {
 			self.evictNodesIfOverCap(nodeCap, limit: chunkSize)
 		}
@@ -561,6 +560,78 @@ actor MeshPackets {
 		}
 	}
 
+	// MARK: - Live Activity reading
+
+	/// What the Live Activity shows for a tracked node, value-copied on this actor for the same
+	/// reason as the watch snapshot: this actor deletes rows, and only value types cross back.
+	/// It also sees this actor's unsaved writes, so a reading taken right after a packet isn't
+	/// a debounced save behind.
+	struct LiveActivityNodeReading: Sendable {
+		let battery: Int32?
+		/// 0 (none) to 3 (good); nil unless heard directly over LoRa, as on the node detail screen.
+		let signalRating: Int?
+		let lastHeard: Date?
+		let hopsAway: Int32
+		/// Meters from the connected radio, when both have a position.
+		let distanceMeters: Double?
+		let ignored: Bool
+	}
+
+	/// Why a reading is or isn't there: only a node that's really gone should end the activity,
+	/// not a retired actor or a failed fetch.
+	enum LiveActivityNodeLookup: Sendable {
+		case found(LiveActivityNodeReading)
+		/// Not in the database: deleted, evicted or cleared.
+		case missing
+		/// Couldn't look: this instance was retired, or the fetch failed.
+		case unavailable
+	}
+
+	func liveActivityNodeReading(num: Int64, radioNum: Int64?) -> LiveActivityNodeLookup {
+		guard !invalidated else { return .unavailable }
+		// Fetch by the scalar number only; an optional-relationship nil check in a predicate
+		// crashes on iOS 26.
+		var nodeDescriptor = FetchDescriptor<NodeInfoEntity>(predicate: #Predicate { $0.num == num })
+		nodeDescriptor.fetchLimit = 1
+		let fetched: [NodeInfoEntity]
+		do {
+			fetched = try modelContext.fetch(nodeDescriptor)
+		} catch {
+			Logger.data.error("🛰️ Live Activity node fetch failed: \(error.localizedDescription, privacy: .public)")
+			return .unavailable
+		}
+		guard let node = fetched.first else { return .missing }
+
+		var radio: NodeInfoEntity?
+		if let radioNum {
+			var radioDescriptor = FetchDescriptor<NodeInfoEntity>(predicate: #Predicate { $0.num == radioNum })
+			radioDescriptor.fetchLimit = 1
+			radio = try? modelContext.fetch(radioDescriptor).first
+		}
+
+		var signalRating: Int?
+		if node.snr != 0 && !node.viaMqtt && node.hopsAway == 0 {
+			let preset = (radio?.loRaConfig?.modemPreset).flatMap { ModemPresets(rawValue: Int($0)) } ?? .longFast
+			signalRating = getLoRaSignalStrength(snr: node.snr, rssi: node.rssi, preset: preset, noiseFloor: radio?.recentNoiseFloor).rawValue
+		}
+
+		var distanceMeters: Double?
+		if let nodeCoordinate = node.latestPosition?.nodeCoordinate,
+		   let radioCoordinate = radio?.latestPosition?.nodeCoordinate {
+			distanceMeters = CLLocation(latitude: nodeCoordinate.latitude, longitude: nodeCoordinate.longitude)
+				.distance(from: CLLocation(latitude: radioCoordinate.latitude, longitude: radioCoordinate.longitude))
+		}
+
+		return .found(LiveActivityNodeReading(
+			battery: node.latestDeviceMetrics?.batteryLevel,
+			signalRating: signalRating,
+			lastHeard: node.lastHeard,
+			hopsAway: node.hopsAway,
+			distanceMeters: distanceMeters,
+			ignored: node.ignored
+		))
+	}
+
 	/// Nodes: cap the total, evicting least-recently-heard first. Never evict favorites — the user
 	/// explicitly kept those. Among already-persisted rows, `lastHeard` is optional; nil sorts first
 	/// (ascending), so never-heard stubs go before any dated node, which is the correct "stalest
@@ -585,6 +656,8 @@ actor MeshPackets {
 		// inclusive of pending inserts, so we free enough persisted rows to make room for them.
 		descriptor.includePendingChanges = false
 		guard let stale = try? modelContext.fetch(descriptor), !stale.isEmpty else { return 0 }
+		TelemetryEntity.deleteAll(forNodes: stale.map(\.num), in: modelContext)
+		NeighborLinkEntity.deleteAll(forNodes: stale.map(\.num), in: modelContext)
 		for node in stale { modelContext.delete(node) }
 		Logger.data.info("🗄️ [Caps] Evicted \(stale.count, privacy: .public) least-recently-heard node(s) (was \(nodeCount, privacy: .public), cap \(cap, privacy: .public))")
 		return stale.count
@@ -819,7 +892,8 @@ actor MeshPackets {
 		case .tak:
 			upsertTAKModuleConfigPacket(config: config.tak, nodeNum: nodeNum)
 		case .trafficManagement:
-			upsertTrafficManagementModuleConfigPacket(config: config.trafficManagement, nodeNum: nodeNum)
+			// Traffic management is configured on the radio only; the app keeps no copy.
+			break
 		default:
 #if DEBUG
 			Logger.services.error("⁉️ Unknown Module Config variant UNHANDLED \(config.payloadVariant.debugDescription, privacy: .public)")
@@ -998,7 +1072,7 @@ actor MeshPackets {
 		Self.applyChannelRefresh(stagedChannel, to: channel)
 	}
 
-	func deviceMetadataPacket (metadata: DeviceMetadata, fromNum: Int64, sessionPasskey: Data? = Data()) {
+	func deviceMetadataPacket (metadata: DeviceMetadata, fromNum: Int64, sessionPasskey: Data? = nil) {
 		if metadata.isInitialized {
 			let logString = String.localizedStringWithFormat("Device Metadata received from: %@".localized, fromNum.toHex())
 			Logger.admin.info("🏷️ \(logString, privacy: .public)")
@@ -1015,7 +1089,7 @@ actor MeshPackets {
 					node.metadata = storedMetadata
 				}
 				storedMetadata.update(from: metadata)
-				if sessionPasskey?.count != 0 {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					node.sessionPasskey = sessionPasskey
 					node.sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1075,7 +1149,11 @@ actor MeshPackets {
 					newNode.channel = Int32(truncatingIfNeeded: nodeInfo.channel)
 					newNode.favorite = nodeInfo.isFavorite
 					newNode.ignored = nodeInfo.isIgnored
-					newNode.hopsAway = Int32(truncatingIfNeeded: nodeInfo.hopsAway)
+					// Left out when the radio doesn't know how far away the node is; reading it anyway gives 0, which means direct.
+					if nodeInfo.hasHopsAway {
+						newNode.hopsAway = Int32(truncatingIfNeeded: nodeInfo.hopsAway)
+					}
+					newNode.viaMqtt = nodeInfo.viaMqtt
 					newNode.hasXeddsaSigned = nodeInfo.hasXeddsaSigned_p
 					// Was missing here while the update path below set it, so a node seen for the
 					// first time — every node on a fresh install or after a database reset — lost
@@ -1090,7 +1168,7 @@ actor MeshPackets {
 						telemetry.voltage = nodeInfo.deviceMetrics.voltage
 						telemetry.channelUtilization = nodeInfo.deviceMetrics.channelUtilization
 						telemetry.airUtilTx = nodeInfo.deviceMetrics.airUtilTx
-						telemetry.nodeTelemetry = newNode
+						telemetry.nodeNum = newNode.num
 					}
 					if nodeInfo.lastHeard > 0 {
 						newNode.firstHeard = Date(timeIntervalSince1970: TimeInterval(Int64(nodeInfo.lastHeard)))
@@ -1198,7 +1276,10 @@ actor MeshPackets {
 					fetchedNode[0].channel = Int32(truncatingIfNeeded: nodeInfo.channel)
 					fetchedNode[0].favorite = nodeInfo.isFavorite
 					fetchedNode[0].ignored = nodeInfo.isIgnored
-					fetchedNode[0].hopsAway = Int32(truncatingIfNeeded: nodeInfo.hopsAway)
+					if nodeInfo.hasHopsAway {
+						fetchedNode[0].hopsAway = Int32(truncatingIfNeeded: nodeInfo.hopsAway)
+					}
+					fetchedNode[0].viaMqtt = nodeInfo.viaMqtt
 					// Both trust flags come from the radio's node db, which is where they live: the
 					// firmware sets has_xeddsa_signed when it verifies a signature and
 					// is_key_manually_verified on a contact exchange, and persists both across its
@@ -1278,7 +1359,7 @@ actor MeshPackets {
 						newTelemetry.voltage = nodeInfo.deviceMetrics.voltage
 						newTelemetry.channelUtilization = nodeInfo.deviceMetrics.channelUtilization
 						newTelemetry.airUtilTx = nodeInfo.deviceMetrics.airUtilTx
-						newTelemetry.nodeTelemetry = fetchedNode[0]
+						newTelemetry.nodeNum = fetchedNode[0].num
 					}
 
 					if nodeInfo.hasPosition {
@@ -1325,6 +1406,18 @@ actor MeshPackets {
 
 	func adminAppPacket (packet: MeshPacket, connectedNodeNum: Int64? = nil) {
 		if let adminMessage = try? AdminMessage(serializedBytes: packet.decoded.payload) {
+			// The session key from a reply to a request we sent, addressed to the connected
+			// node. An unsolicited or forwarded admin message, or one with no key, leaves the
+			// stored session alone.
+			let responsePasskey: Data?
+			if let connectedNodeNum,
+			   packet.decoded.requestID != 0,
+			   Int64(packet.to) == connectedNodeNum,
+			   !adminMessage.sessionPasskey.isEmpty {
+				responsePasskey = adminMessage.sessionPasskey
+			} else {
+				responsePasskey = nil
+			}
 
 			if adminMessage.payloadVariant == AdminMessage.OneOf_PayloadVariant.getCannedMessageModuleMessagesResponse(adminMessage.getCannedMessageModuleMessagesResponse) {
 
@@ -1354,58 +1447,58 @@ actor MeshPackets {
 			} else if adminMessage.payloadVariant == AdminMessage.OneOf_PayloadVariant.getChannelResponse(adminMessage.getChannelResponse) {
 				channelPacket(channel: adminMessage.getChannelResponse, fromNum: Int64(packet.from))
 			} else if adminMessage.payloadVariant == AdminMessage.OneOf_PayloadVariant.getDeviceMetadataResponse(adminMessage.getDeviceMetadataResponse) {
-				deviceMetadataPacket(metadata: adminMessage.getDeviceMetadataResponse, fromNum: Int64(packet.from), sessionPasskey: adminMessage.sessionPasskey)
+				deviceMetadataPacket(metadata: adminMessage.getDeviceMetadataResponse, fromNum: Int64(packet.from), sessionPasskey: responsePasskey)
 			} else if adminMessage.payloadVariant == AdminMessage.OneOf_PayloadVariant.getConfigResponse(adminMessage.getConfigResponse) {
 				let config = adminMessage.getConfigResponse
 				if config.payloadVariant == Config.OneOf_PayloadVariant.bluetooth(config.bluetooth) {
-					upsertBluetoothConfigPacket(config: config.bluetooth, nodeNum: Int64(packet.from), sessionPasskey: adminMessage.sessionPasskey)
+					upsertBluetoothConfigPacket(config: config.bluetooth, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if config.payloadVariant == Config.OneOf_PayloadVariant.device(config.device) {
-					upsertDeviceConfigPacket(config: config.device, nodeNum: Int64(packet.from), sessionPasskey: adminMessage.sessionPasskey)
+					upsertDeviceConfigPacket(config: config.device, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if config.payloadVariant == Config.OneOf_PayloadVariant.display(config.display) {
-					self.upsertDisplayConfigPacket(config: config.display, nodeNum: Int64(packet.from), sessionPasskey: adminMessage.sessionPasskey)
+					self.upsertDisplayConfigPacket(config: config.display, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if config.payloadVariant == Config.OneOf_PayloadVariant.lora(config.lora) {
-					self.upsertLoRaConfigPacket(config: config.lora, nodeNum: Int64(packet.from), sessionPasskey: adminMessage.sessionPasskey)
+					self.upsertLoRaConfigPacket(config: config.lora, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if config.payloadVariant == Config.OneOf_PayloadVariant.network(config.network) {
-					self.upsertNetworkConfigPacket(config: config.network, nodeNum: Int64(packet.from), sessionPasskey: adminMessage.sessionPasskey)
+					self.upsertNetworkConfigPacket(config: config.network, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if config.payloadVariant == Config.OneOf_PayloadVariant.position(config.position) {
-					self.upsertPositionConfigPacket(config: config.position, nodeNum: Int64(packet.from), sessionPasskey: adminMessage.sessionPasskey)
+					self.upsertPositionConfigPacket(config: config.position, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if config.payloadVariant == Config.OneOf_PayloadVariant.power(config.power) {
-					self.upsertPowerConfigPacket(config: config.power, nodeNum: Int64(packet.from), sessionPasskey: adminMessage.sessionPasskey)
+					self.upsertPowerConfigPacket(config: config.power, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if config.payloadVariant == Config.OneOf_PayloadVariant.security(config.security) {
-					self.upsertSecurityConfigPacket(config: config.security, nodeNum: Int64(packet.from), sessionPasskey: adminMessage.sessionPasskey)
+					self.upsertSecurityConfigPacket(config: config.security, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				}
 			} else if adminMessage.payloadVariant == AdminMessage.OneOf_PayloadVariant.getModuleConfigResponse(adminMessage.getModuleConfigResponse) {
 				let moduleConfig = adminMessage.getModuleConfigResponse
 				if moduleConfig.payloadVariant == ModuleConfig.OneOf_PayloadVariant.ambientLighting(moduleConfig.ambientLighting) {
-					self.upsertAmbientLightingModuleConfigPacket(config: moduleConfig.ambientLighting, nodeNum: Int64(packet.from))
+					self.upsertAmbientLightingModuleConfigPacket(config: moduleConfig.ambientLighting, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if moduleConfig.payloadVariant == ModuleConfig.OneOf_PayloadVariant.audio(moduleConfig.audio) {
-					self.upsertAudioModuleConfigPacket(config: moduleConfig.audio, nodeNum: Int64(packet.from))
+					self.upsertAudioModuleConfigPacket(config: moduleConfig.audio, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if moduleConfig.payloadVariant == ModuleConfig.OneOf_PayloadVariant.cannedMessage(moduleConfig.cannedMessage) {
-					self.upsertCannedMessagesModuleConfigPacket(config: moduleConfig.cannedMessage, nodeNum: Int64(packet.from))
+					self.upsertCannedMessagesModuleConfigPacket(config: moduleConfig.cannedMessage, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if moduleConfig.payloadVariant == ModuleConfig.OneOf_PayloadVariant.detectionSensor(moduleConfig.detectionSensor) {
-					self.upsertDetectionSensorModuleConfigPacket(config: moduleConfig.detectionSensor, nodeNum: Int64(packet.from))
+					self.upsertDetectionSensorModuleConfigPacket(config: moduleConfig.detectionSensor, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if moduleConfig.payloadVariant == ModuleConfig.OneOf_PayloadVariant.externalNotification(moduleConfig.externalNotification) {
-					self.upsertExternalNotificationModuleConfigPacket(config: moduleConfig.externalNotification, nodeNum: Int64(packet.from))
+					self.upsertExternalNotificationModuleConfigPacket(config: moduleConfig.externalNotification, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if moduleConfig.payloadVariant == ModuleConfig.OneOf_PayloadVariant.mqtt(moduleConfig.mqtt) {
-					self.upsertMqttModuleConfigPacket(config: moduleConfig.mqtt, nodeNum: Int64(packet.from))
+					self.upsertMqttModuleConfigPacket(config: moduleConfig.mqtt, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if moduleConfig.payloadVariant == ModuleConfig.OneOf_PayloadVariant.rangeTest(moduleConfig.rangeTest) {
-					self.upsertRangeTestModuleConfigPacket(config: moduleConfig.rangeTest, nodeNum: Int64(packet.from))
+					self.upsertRangeTestModuleConfigPacket(config: moduleConfig.rangeTest, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if moduleConfig.payloadVariant == ModuleConfig.OneOf_PayloadVariant.serial(moduleConfig.serial) {
-					self.upsertSerialModuleConfigPacket(config: moduleConfig.serial, nodeNum: Int64(packet.from))
+					self.upsertSerialModuleConfigPacket(config: moduleConfig.serial, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if moduleConfig.payloadVariant == ModuleConfig.OneOf_PayloadVariant.storeForward(moduleConfig.storeForward) {
-					self.upsertStoreForwardModuleConfigPacket(config: moduleConfig.storeForward, nodeNum: Int64(packet.from))
+					self.upsertStoreForwardModuleConfigPacket(config: moduleConfig.storeForward, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if moduleConfig.payloadVariant == ModuleConfig.OneOf_PayloadVariant.telemetry(moduleConfig.telemetry) {
-					self.upsertTelemetryModuleConfigPacket(config: moduleConfig.telemetry, nodeNum: Int64(packet.from))
+					self.upsertTelemetryModuleConfigPacket(config: moduleConfig.telemetry, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if moduleConfig.payloadVariant == ModuleConfig.OneOf_PayloadVariant.tak(moduleConfig.tak) {
-					self.upsertTAKModuleConfigPacket(config: moduleConfig.tak, nodeNum: Int64(packet.from))
+					self.upsertTAKModuleConfigPacket(config: moduleConfig.tak, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				} else if moduleConfig.payloadVariant == ModuleConfig.OneOf_PayloadVariant.statusmessage(moduleConfig.statusmessage) {
-					self.upsertStatusMessageModuleConfigPacket(config: moduleConfig.statusmessage, nodeNum: Int64(packet.from))
-				} else if moduleConfig.payloadVariant == ModuleConfig.OneOf_PayloadVariant.trafficManagement(moduleConfig.trafficManagement) {
-					self.upsertTrafficManagementModuleConfigPacket(config: moduleConfig.trafficManagement, nodeNum: Int64(packet.from))
+					self.upsertStatusMessageModuleConfigPacket(config: moduleConfig.statusmessage, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
+				} else if moduleConfig.payloadVariant == ModuleConfig.OneOf_PayloadVariant.meshBeacon(moduleConfig.meshBeacon) {
+					self.upsertMeshBeaconModuleConfigPacket(config: moduleConfig.meshBeacon, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				}
 			} else if adminMessage.payloadVariant == AdminMessage.OneOf_PayloadVariant.getRingtoneResponse(adminMessage.getRingtoneResponse) {
 				if let rt = try? RTTTLConfig(serializedBytes: packet.decoded.payload) {
-					self.upsertRtttlConfigPacket(ringtone: rt.ringtone, nodeNum: Int64(packet.from))
+					self.upsertRtttlConfigPacket(ringtone: rt.ringtone, nodeNum: Int64(packet.from), sessionPasskey: responsePasskey)
 				}
 			} else {
 				Logger.admin.error("🕸️ MESH PACKET received Admin App UNHANDLED \((try? packet.decoded.jsonString()) ?? "JSON Decode Failure", privacy: .public)")
@@ -1417,10 +1510,7 @@ actor MeshPackets {
 			// to the connected node — an unsolicited or forwarded admin message never
 			// unlocks the remote-admin UI. Runs after the handlers above so a node first
 			// heard via a metadata response exists by now.
-			if let connectedNodeNum,
-			   packet.decoded.requestID != 0,
-			   Int64(packet.to) == connectedNodeNum,
-			   !adminMessage.sessionPasskey.isEmpty {
+			if responsePasskey != nil {
 				switch adminMessage.payloadVariant {
 				case .getChannelResponse, .getOwnerResponse, .getConfigResponse, .getModuleConfigResponse,
 					 .getCannedMessageModuleMessagesResponse, .getDeviceMetadataResponse, .getRingtoneResponse,
@@ -1609,7 +1699,7 @@ actor MeshPackets {
 			// Telemetry is genuine RF contact with packet.from. Like deviceMetadataPacket /
 			// textMessageAppPacket, ensure a NodeInfoEntity exists before storing so telemetry that
 			// arrives before the node's NodeInfo / nodeDB entry is not dropped as an orphan row
-			// (nodeTelemetry == nil) that the UI can never query. `num` is @Attribute(.unique), so this
+			// (no node to show it under) that the UI can never query. `num` is @Attribute(.unique), so this
 			// returns the existing node or a minimal stub that a later NodeInfo packet enriches.
 			let node = findOrCreateNode(num: packetFrom, context: modelContext)
 			let telemetry = TelemetryEntity()
@@ -1652,7 +1742,7 @@ actor MeshPackets {
 				telemetry.soilMoisture = telemetryMessage.environmentMetrics.hasSoilMoisture.then(telemetryMessage.environmentMetrics.soilMoisture)
 				telemetry.metricsType = 1
 			} else if telemetryMessage.variant == Telemetry.OneOf_Variant.localStats(telemetryMessage.localStats) {
-				// Local Stats for Live activity
+				// Local Stats, for the Mesh Status widget and Live Activity
 				telemetry.uptimeSeconds = Int32(truncatingIfNeeded: telemetryMessage.localStats.uptimeSeconds)
 				telemetry.channelUtilization = telemetryMessage.localStats.channelUtilization
 				telemetry.airUtilTx = telemetryMessage.localStats.airUtilTx
@@ -1698,8 +1788,9 @@ actor MeshPackets {
 			// node reporting time == 0 (no RTC/GPS) never stores as 1970 and gets hidden by the node
 			// detail's "latest" sort and the 7-day chart window.
 			telemetry.time = resolveTimestamp(telemetryMessage.time, packet.rxTime)
-			// Assign via relationship without loading all telemetries
-			telemetry.nodeTelemetry = node
+			// Link by node number, not through `nodeTelemetry`: setting the relationship makes
+			// SwiftData load every telemetry row this node has to update its inverse array.
+			telemetry.nodeNum = packetFrom
 
 			// Keep telemetry bounded as a soft cap during bursts; counting
 			// and sorting every telemetry packet does not scale on large meshes.
@@ -1707,13 +1798,13 @@ actor MeshPackets {
 			let nodeNum = packetFrom
 			if shouldPruneTelemetryHistory(nodeNum: nodeNum, metricsType: metricsType) {
 				let countDescriptor = FetchDescriptor<TelemetryEntity>(
-					predicate: #Predicate<TelemetryEntity> { $0.nodeTelemetry?.num == nodeNum && $0.metricsType == metricsType }
+					predicate: TelemetryEntity.predicate(forNode: nodeNum, metricsType: metricsType)
 				)
 				let currentCount = (try? modelContext.fetchCount(countDescriptor)) ?? 0
 				if currentCount > MeshPackets.maxTelemetryPerType {
 					let excess = currentCount - MeshPackets.maxTelemetryPerType
 					var pruneDescriptor = FetchDescriptor<TelemetryEntity>(
-						predicate: #Predicate<TelemetryEntity> { $0.nodeTelemetry?.num == nodeNum && $0.metricsType == metricsType },
+						predicate: TelemetryEntity.predicate(forNode: nodeNum, metricsType: metricsType),
 						sortBy: [SortDescriptor(\TelemetryEntity.time, order: .forward)]
 					)
 					pruneDescriptor.fetchLimit = excess
@@ -1738,6 +1829,16 @@ actor MeshPackets {
 				// ------------------------
 				// Low Battery notification
 				if connectedNode == Int64(packet.from) {
+					// The Live Activity shows the radio's battery; hand it over as a plain
+					// value, since the broker only rebuilds on other events.
+					if let liveActivityBattery = telemetry.batteryLevel {
+						// The radio it came from travels with it, so a radio switch before
+						// the hop can't pin this reading on the new radio.
+						let batteryRadioNum = connectedNode
+						Task { @MainActor in
+							MeshLiveActivityManager.shared.radioBatteryDidUpdate(liveActivityBattery, radioNum: batteryRadioNum)
+						}
+					}
 					let batteryLevel = telemetry.batteryLevel ?? 0
 					if UserDefaults.lowBatteryNotifications && batteryLevel > 0 && batteryLevel < 4 {
 						// Only when the notification will actually fire: snapshot plain values from the
@@ -1746,9 +1847,9 @@ actor MeshPackets {
 						// invalidated (the same pattern the text-message path follows). Gating first also
 						// avoids faulting the user relationship and running the formatter on every packet.
 						let notificationID = "notification.lowbattery.\(packet.from)"
-						let shortName = telemetry.nodeTelemetry?.user?.shortName ?? "UNK"
+						let shortName = node.user?.shortName ?? "UNK"
 						let batteryText = telemetry.batteryLevel?.formatted(.number) ?? Constants.nilValueIndicator
-						let nodeNum = telemetry.nodeTelemetry?.num ?? 0
+						let nodeNum = node.num
 						Task {@MainActor in
 							let manager = LocalNotificationManager()
 							manager.notifications = [
@@ -1766,38 +1867,31 @@ actor MeshPackets {
 					}
 				}
 			} else if telemetry.metricsType == 4 {
-				// Update our live activity if there is one running, not available on mac
-#if !targetEnvironment(macCatalyst)
-#if canImport(ActivityKit)
-
-				let fifteenMinutesLater = Calendar.current.date(byAdding: .minute, value: (Int(15) ), to: Date())!
-				let date = Date.now...fifteenMinutesLater
-				let updatedMeshStatus = MeshActivityAttributes.MeshActivityStatus(uptimeSeconds: telemetry.uptimeSeconds.map { UInt32(bitPattern: $0) },
-																				  channelUtilization: telemetry.channelUtilization,
-																				  airtime: telemetry.airUtilTx,
-																				  sentPackets: UInt32(bitPattern: telemetry.numPacketsTx),
-																				  receivedPackets: UInt32(bitPattern: telemetry.numPacketsRx),
-																				  badReceivedPackets: UInt32(bitPattern: telemetry.numPacketsRxBad),
-																				  dupeReceivedPackets: UInt32(bitPattern: telemetry.numRxDupe),
-																				  packetsSentRelay: UInt32(bitPattern: telemetry.numTxRelay),
-																				  packetsCanceledRelay: UInt32(bitPattern: telemetry.numTxRelayCanceled),
-																				  nodesOnline: UInt32(bitPattern: telemetry.numOnlineNodes),
-																				  totalNodes: UInt32(bitPattern: telemetry.numTotalNodes),
-																				  timerRange: date)
-
-				let alertConfiguration = AlertConfiguration(title: "Mesh activity update", body: "Updated Node Stats Data.", sound: .default)
-				let updatedContent = ActivityContent(state: updatedMeshStatus, staleDate: nil)
-
-				let meshActivity = Activity<MeshActivityAttributes>.activities.first(where: { $0.attributes.nodeNum == connectedNode })
-				if meshActivity != nil {
-					Task {
-						// await meshActivity?.update(updatedContent, alertConfiguration: alertConfiguration)
-						await meshActivity?.update(updatedContent)
-						Logger.services.debug("Updated live activity.")
+				// Hand the connected radio's LocalStats to the widget snapshot as
+				// plain values — the broker runs on the main actor and must not
+				// hold this context-bound entity across the hop. Guarded to the
+				// connected node like the device-metrics branch above: relayed
+				// LocalStats from other nodes are not our radio's counters.
+				if connectedNode == Int64(packet.from) {
+					let statsNodeNum = connectedNode
+					let widgetStats = LocalStatsSnapshot(
+						statsAt: telemetry.time ?? Date(),
+						uptimeSeconds: telemetry.uptimeSeconds,
+						channelUtilization: telemetry.channelUtilization,
+						airUtilTx: telemetry.airUtilTx,
+						packetsSent: telemetry.numPacketsTx,
+						packetsReceived: telemetry.numPacketsRx,
+						packetsReceivedBad: telemetry.numPacketsRxBad,
+						packetsReceivedDupe: telemetry.numRxDupe,
+						packetsRelayed: telemetry.numTxRelay,
+						packetsRelayCanceled: telemetry.numTxRelayCanceled,
+						nodesOnline: telemetry.numOnlineNodes,
+						nodesTotal: telemetry.numTotalNodes
+					)
+					Task { @MainActor in
+						WidgetDataBroker.shared.updateLocalStats(widgetStats, nodeNum: statsNodeNum)
 					}
 				}
-#endif
-#endif
 			}
 		} else {
 			Logger.data.error("💥 Error Decoding Telemetry payload for Node \(packet.from.toHex(), privacy: .public)")

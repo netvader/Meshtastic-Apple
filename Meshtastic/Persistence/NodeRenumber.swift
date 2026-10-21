@@ -65,6 +65,10 @@ enum NodeRenumber {
 			for hop in route.hops where hop.num == oldNum { hop.num = newNum }
 			for snapshot in route.nodePositions where snapshot.num == oldNum { snapshot.num = newNum }
 		}
+		let telemetry = try context.fetch(
+			FetchDescriptor<TelemetryEntity>(predicate: #Predicate { $0.nodeNum == oldNum })
+		)
+		for row in telemetry { row.nodeNum = newNum }
 		let relayed = try context.fetch(
 			FetchDescriptor<MessageEntity>(predicate: #Predicate { $0.relayNode == oldNum })
 		)
@@ -78,6 +82,20 @@ enum NodeRenumber {
 		}
 		for beacon in try fetchAll(DiscoveredBeaconEntity.self, in: context) where beacon.nodeNum == oldNum {
 			beacon.nodeNum = newNum
+		}
+		try renumberNeighborLinks(from: oldNum, to: newNum, in: context)
+	}
+
+	/// Rows already saved under the new number would collide with the moved ones on `key`, and
+	/// the old number's rows are the ones that belong to this radio, so the new number's go.
+	private static func renumberNeighborLinks(from oldNum: Int64, to newNum: Int64, in context: ModelContext) throws {
+		for row in try context.fetch(FetchDescriptor(predicate: NeighborLinkEntity.predicate(involving: [newNum]))) {
+			context.delete(row)
+		}
+		for row in try context.fetch(FetchDescriptor(predicate: NeighborLinkEntity.predicate(involving: [oldNum]))) {
+			if row.reporterNum == oldNum { row.reporterNum = newNum }
+			if row.neighborNum == oldNum { row.neighborNum = newNum }
+			row.key = NeighborLinkEntity.key(reporter: row.reporterNum, neighbor: row.neighborNum)
 		}
 	}
 
@@ -93,6 +111,12 @@ enum NodeRenumber {
 			context.delete(duplicate)
 		}
 		if let duplicateNode = try fetchNode(num: newNum, in: context), duplicateNode !== keeper.userNode {
+			// Older telemetry is only linked to the node, and deleting the node unlinks it.
+			// Give it the number first so it stays with the renumbered radio.
+			let linked = try context.fetch(FetchDescriptor<TelemetryEntity>(
+				predicate: #Predicate { $0.nodeNum == 0 && $0.nodeTelemetry?.num == newNum }
+			))
+			for row in linked { row.nodeNum = newNum }
 			context.delete(duplicateNode)
 		}
 	}

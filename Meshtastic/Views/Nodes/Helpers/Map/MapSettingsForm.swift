@@ -11,7 +11,6 @@ import OSLog
 import UniformTypeIdentifiers
 
 struct MapSettingsForm: View {
-	@Environment(\.dismiss) private var dismiss
 	@State private var currentDetent = PresentationDetent.medium
 	@State private var isShowingFilePicker = false
 	@State private var isProcessingUpload = false
@@ -108,6 +107,7 @@ struct MapSettingsForm: View {
 									.symbolRenderingMode(.multicolor)
 							}
 						}
+						DirectLinksToggle()
 					}
 					if !meshMap {
 						Toggle(isOn: $nodeHistory) {
@@ -263,6 +263,7 @@ struct MapSettingsForm: View {
 			}
 			.navigationTitle("Map Options")
 			.navigationBarTitleDisplayMode(.inline)
+			.sheetCloseButton()
 			.fileImporter(
 				isPresented: $isShowingFilePicker,
 				allowedContentTypes: [
@@ -279,22 +280,6 @@ struct MapSettingsForm: View {
 				Text(uploadErrorMessage)
 			}
 		}
-		#if targetEnvironment(macCatalyst)
-		.overlay(alignment: .topLeading) {
-			Button {
-				dismiss()
-			} label: {
-				Image(systemName: "xmark.circle.fill")
-					.font(.system(size: 34))
-					.symbolRenderingMode(.palette)
-					.foregroundStyle(.white, Color(.systemGray3))
-			}
-			.accessibilityLabel(String(localized: "Close", comment: "VoiceOver: dismiss this sheet"))
-			.buttonStyle(.plain)
-			.padding(.top, 12)
-			.padding(.leading, 14)
-		}
-		#endif
 		.presentationDetents([.large], selection: $currentDetent)
 		.presentationContentInteraction(.scrolls)
 		#if !targetEnvironment(macCatalyst)
@@ -484,4 +469,41 @@ struct MapSettingsForm: View {
 		meshMap: .constant(true),
 		enabledOverlayConfigs: .constant(Set<UUID>())
 	)
+	.environmentObject(AccessoryManager.shared)
+}
+
+/// Turns on the lines between nodes that hear each other directly.
+private struct DirectLinksToggle: View {
+	@AppStorage("meshMapShowDirectLinks") private var showDirectLinks = false
+	@EnvironmentObject private var accessoryManager: AccessoryManager
+	@Environment(\.modelContext) private var context
+
+	/// The connected radio has sent its Neighbor Info settings and the module is off. Its radio
+	/// then drops other nodes' reports, so only its own direct links can be drawn.
+	private var neighborInfoOff: Bool {
+		guard let num = accessoryManager.activeDeviceNum,
+			  let config = getNodeInfo(id: num, context: context)?.neighborInfoConfig
+		else { return false }
+		return !config.enabled
+	}
+
+	var body: some View {
+		Toggle(isOn: $showDirectLinks) {
+			Label {
+				VStack(alignment: .leading) {
+					Text("Direct Links")
+					Text("Lines between nodes that hear each other directly, colored by signal quality. Links from your radio come from the nodes it hears; links between other nodes come from their Neighbor Info reports.")
+						.font(.caption)
+						.foregroundColor(.secondary)
+					if neighborInfoOff {
+						Text("Your radio's Neighbor Info module is off, so links between other nodes can't be shown.")
+							.font(.caption)
+							.foregroundColor(.secondary)
+					}
+				}
+			} icon: {
+				Image(systemName: "point.3.connected.trianglepath.dotted")
+			}
+		}
+	}
 }

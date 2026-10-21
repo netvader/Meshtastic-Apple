@@ -25,6 +25,8 @@ struct MeshtasticAppleApp: App {
 	@Environment(\.scenePhase) var scenePhase
 	#if os(visionOS)
 	@Environment(\.openWindow) private var openWindow
+	/// The showcase's immersion: progressive by default, with mixed and full offered.
+	@State private var showcaseImmersion: any ImmersionStyle = ProgressiveImmersionStyle.progressive(0.35...1.0, initialAmount: 0.7)
 	#endif
 
 	private static let isRunningTests = NSClassFromString("XCTestCase") != nil || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
@@ -118,6 +120,10 @@ struct MeshtasticAppleApp: App {
 #if os(iOS)
 		self.appDelegate.appState = appState
 #endif
+		// Control Center controls open a screen the way a notification tap does.
+		MeshScreenOpener.handler = { url in
+			appState.pendingRoute = PendingRoute(url: url)
+		}
 
 #if DEBUG
 		if let persistenceController, let performanceSeedConfiguration {
@@ -136,6 +142,10 @@ struct MeshtasticAppleApp: App {
 #endif
 
 		if Self.shouldInitializeAppServices {
+			// One-time copy of the node number onto telemetry saved by earlier versions.
+			if let persistenceController {
+				TelemetryNodeNumBackfill.startIfNeeded(persistence: persistenceController, appState: appState)
+			}
 			// Initialize map data manager
 			MapDataManager.shared.initialize()
 
@@ -301,6 +311,12 @@ struct MeshtasticAppleApp: App {
 			// backgrounding the demo must not touch (or force-unwrap) SwiftData.
 			guard Self.shouldInitializeAppServices, let persistenceController else { return }
 			accessoryManager.isInBackground = (newScenePhase == .background)
+			#if os(visionOS)
+			// Grows the Spatial Map's terrain with the mesh while the app is open.
+			SpatialTerrainKeeper.shared.setAppActive(newScenePhase == .active) { [appState] in
+				appState.isDatabaseResetting ? nil : persistenceController.container
+			}
+			#endif
 			switch newScenePhase {
 			case .background:
 				Logger.services.info("🎬 [App] Scene is in the background")
@@ -377,6 +393,23 @@ struct MeshtasticAppleApp: App {
 		.volumeWorldAlignment(.gravityAligned)
 		.restorationBehavior(.disabled)
 		.handlesExternalEvents(matching: [])
+
+		// The mesh as radios in a showcase. Same gates and environment as the spatial map volume.
+		ImmersiveSpace(id: ShowcaseScene.id) {
+			if Self.shouldInitializeAppServices, let persistenceController, !appState.isDatabaseResetting {
+				EventFirmwareTintScope {
+					ShowcaseSpace()
+						.id(appState.databaseResetID)
+				}
+				.modelContainer(persistenceController.container)
+				.environmentObject(appState)
+				.environmentObject(accessoryManager)
+				.environmentObject(lockdownCoordinator)
+				.environmentObject(MeshtasticAPI.shared)
+			}
+		}
+		.immersionStyle(selection: $showcaseImmersion, in: .mixed, .progressive(0.35...1.0, initialAmount: 0.7), .full)
+		.immersiveEnvironmentBehavior(.coexist)
 		#endif
 	}
 }

@@ -29,6 +29,7 @@ enum MeshtasticSchemaV1: VersionedSchema {
 			TraceRouteNodePositionEntity.self,
 			RouteEntity.self,
 			LocationEntity.self,
+			NeighborLinkEntity.self,
 			// Device hardware & firmware entities
 			DeviceHardwareEntity.self,
 			DeviceHardwareImageEntity.self,
@@ -61,7 +62,6 @@ enum MeshtasticSchemaV1: VersionedSchema {
 			StatusMessageConfigEntity.self,
 			StoreForwardConfigEntity.self,
 			TAKConfigEntity.self,
-			TrafficManagementConfigEntity.self,
 			TelemetryConfigEntity.self,
 			// Discovery entities
 			DiscoverySessionEntity.self,

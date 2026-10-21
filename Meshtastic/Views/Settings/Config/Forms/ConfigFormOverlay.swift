@@ -34,12 +34,12 @@ struct ConfigFormOverlay<M: ConfigSchemaMessage> {
 	}
 
 	/// Whether a field is rendered for these values: the overlay's own condition first,
-	/// then the schema's own rules - a DIY-only field is not offered on hardware that is
-	/// not tagged DIY, and a field outside the firmware's reading window is not offered
+	/// then the schema's own rules - a DIY-only GPS pin field is not offered on a board
+	/// whose maker wired the GPS, and a field outside the firmware's reading window is not offered
 	/// at all.
 	func isVisible(_ field: ConfigFormField<M>, in config: M, _ env: ConfigFormEnvironment) -> Bool {
 		if let condition = field.shownWhen, !condition.evaluate(config, env) { return false }
-		if field.field.metadata?.diyOnly == true, env.isConnected, !env.isDIYHardware { return false }
+		if field.field.metadata?.diyOnly == true, env.isConnected, env.hasFixedGPS { return false }
 		if field.shownDespiteFirmware != nil { return true }
 		return env.firmwareReads(field.field.metadata)
 	}
@@ -89,7 +89,10 @@ struct ConfigFormOverlay<M: ConfigSchemaMessage> {
 }
 
 struct ConfigFormSection<M: ConfigSchemaMessage>: Identifiable {
-	let id = UUID()
+	/// Forms rebuild their overlay on every render, so the id has to come from the content. A fresh
+	/// id each time made the list throw away every row, and any sheet or state a row held, whenever
+	/// the screen redrew. Each field is laid out once, so the first field names the section.
+	var id: String { fields.first?.id ?? title ?? "" }
 	var title: String?
 	var footer: String?
 	var shownWhen: ConfigFormCondition<M>?
@@ -341,7 +344,8 @@ struct ConfigFormEnvironment {
 	let isConnected: Bool
 	/// The node being configured is the connected radio, not a remote admin target.
 	let isConnectedNode: Bool
-	let isDIYHardware: Bool
+	/// The board's maker wired the GPS (`oem_fixed_gps`), so DIY-only GPS pin fields do not apply.
+	let hasFixedGPS: Bool
 	let hasWifi: Bool
 	let hasEthernet: Bool
 	let hasXeddsa: Bool

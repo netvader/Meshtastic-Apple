@@ -145,10 +145,10 @@ struct TraceRouteShareCard: View {
 		}
 	}
 
-	/// "Origin → Destination" with the arrow in the brand color.
+	/// "Origin → Destination" with the arrow in the round trip purple, since the route runs both ways.
 	private func routeTitle(origin: TraceRouteStop, destination: TraceRouteStop) -> AttributedString {
 		var arrow = AttributedString(" → ")
-		arrow.foregroundColor = Style.brand
+		arrow.foregroundColor = TraceRouteColors.roundTrip
 		return AttributedString(origin.longName) + arrow + AttributedString(destination.longName)
 	}
 
@@ -266,7 +266,7 @@ struct TraceRouteShareStats: View {
 				.lineLimit(1)
 				.minimumScaleFactor(0.6)
 			Label(label, systemImage: systemImage)
-				.labelStyle(TraceRouteShareStatLabelStyle())
+				.labelStyle(TraceRouteTightLabelStyle())
 				.font(.system(size: 11, weight: .semibold))
 				.textCase(.uppercase)
 				.foregroundStyle(Style.secondaryText)
@@ -281,8 +281,8 @@ struct TraceRouteShareStats: View {
 	}
 }
 
-/// Icon and title side by side with a small gap, for the stat tiles.
-private struct TraceRouteShareStatLabelStyle: LabelStyle {
+/// Icon and title side by side with a small gap, for the stat tiles and the timeline headings.
+struct TraceRouteTightLabelStyle: LabelStyle {
 	func makeBody(configuration: Configuration) -> some View {
 		HStack(spacing: 4) {
 			configuration.icon
@@ -303,7 +303,7 @@ struct TraceRouteShareChains: View {
 		if model.legs.back.isEmpty {
 			VStack(alignment: .leading, spacing: 10) {
 				forward
-				Text("No return route was reported.", comment: "Trace route share image: the response didn't include the path back")
+				Text("No return route was reported.", comment: "Trace route timeline and share image: the response didn't include the path back")
 					.font(.system(size: 13))
 					.foregroundStyle(Style.tertiaryText)
 			}
@@ -350,29 +350,41 @@ struct TraceRouteShareChains: View {
 	}
 }
 
+/// Colors for `TraceRouteShareNodeCircle`: light on dark for the share image and the map, or
+/// system colors that follow the appearance in the app's lists.
+struct TraceRouteNodeCircleColors {
+	let unknownFill: Color
+	let unknownStroke: Color
+	/// A faint edge so a node color close to the background still shows.
+	let edge: Color
+
+	static let shareImage = Self(unknownFill: Color.white.opacity(0.04), unknownStroke: TraceRouteShareStyle.secondaryText, edge: Color.white.opacity(0.22))
+	static let app = Self(unknownFill: Color.secondary.opacity(0.08), unknownStroke: .secondary, edge: Color.primary.opacity(0.15))
+}
+
 /// A node's short name in a circle of its color, or a dashed "?" for an unknown repeater.
 struct TraceRouteShareNodeCircle: View {
 	let stop: TraceRouteStop
 	let size: CGFloat
 	var ring: Color?
+	var colors: TraceRouteNodeCircleColors = .shareImage
 
 	var body: some View {
 		Group {
 			if stop.isUnknownRepeater {
 				ZStack {
 					Circle()
-						.fill(Color.white.opacity(0.04))
+						.fill(colors.unknownFill)
 					Circle()
-						.strokeBorder(TraceRouteShareStyle.secondaryText, style: StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
+						.strokeBorder(colors.unknownStroke, style: StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
 					Text(verbatim: "?")
 						.font(.system(size: size * 0.45, weight: .bold))
-						.foregroundStyle(TraceRouteShareStyle.secondaryText)
+						.foregroundStyle(colors.unknownStroke)
 				}
 				.frame(width: size, height: size)
 			} else {
 				CircleText(text: stop.shortName, color: Color(UIColor(hex: UInt32(truncatingIfNeeded: stop.num))), circleSize: size)
-					// A faint edge so a dark node color still shows against the dark card.
-					.overlay(Circle().strokeBorder(Color.white.opacity(0.22), lineWidth: 1))
+					.overlay(Circle().strokeBorder(colors.edge, lineWidth: 1))
 			}
 		}
 		.overlay {
@@ -383,6 +395,21 @@ struct TraceRouteShareNodeCircle: View {
 			}
 		}
 		.padding(ring == nil ? 0 : 3)
+	}
+}
+
+/// A relay's position in its chain, on the top right of its circle.
+struct TraceRouteHopNumberBadge: View {
+	let number: Int
+
+	var body: some View {
+		Text(verbatim: "\(number)")
+			.font(.system(size: 9.5, weight: .bold, design: .rounded))
+			.foregroundStyle(Color.white)
+			.frame(minWidth: 15, minHeight: 15)
+			.background(Circle().fill(Color.black))
+			.overlay(Circle().strokeBorder(Color.white.opacity(0.9), lineWidth: 1))
+			.offset(x: 6, y: -4)
 	}
 }
 
@@ -439,13 +466,7 @@ private struct TraceRouteShareChain: View {
 			ZStack(alignment: .topTrailing) {
 				TraceRouteShareNodeCircle(stop: stop, size: circleSize, ring: isEndpoint ? ring(for: stop) : nil)
 				if !isEndpoint {
-					Text(verbatim: "\(stop.id)")
-						.font(.system(size: 9.5, weight: .bold, design: .rounded))
-						.foregroundStyle(Color.white)
-						.frame(minWidth: 15, minHeight: 15)
-						.background(Circle().fill(Color.black))
-						.overlay(Circle().strokeBorder(Color.white.opacity(0.9), lineWidth: 1))
-						.offset(x: 6, y: -4)
+					TraceRouteHopNumberBadge(number: stop.id)
 				}
 			}
 			.frame(width: circleSize + 6)
@@ -497,7 +518,7 @@ private struct TraceRouteShareChain: View {
 	private func connector(_ stop: TraceRouteStop) -> some View {
 		let lineColor = stop.quality?.color ?? Color.gray
 		return HStack(spacing: 10) {
-			TraceRouteShareLegLine()
+			TraceRouteLegLine()
 				.stroke(lineColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round, dash: stop.snr == nil ? [3, 4] : []))
 				.frame(width: circleSize + 6, height: connectorHeight)
 			Group {
@@ -523,7 +544,7 @@ private struct TraceRouteShareChain: View {
 }
 
 /// A vertical line down the middle of its frame, inset so it doesn't touch the circles.
-private struct TraceRouteShareLegLine: Shape {
+struct TraceRouteLegLine: Shape {
 	func path(in rect: CGRect) -> Path {
 		Path { path in
 			path.move(to: CGPoint(x: rect.midX, y: rect.minY + 3))
@@ -534,14 +555,27 @@ private struct TraceRouteShareLegLine: Shape {
 
 // MARK: - Map
 
-/// The map tiles with the route drawn on top: forward legs solid, return legs dashed, both colored
-/// by SNR with an arrow for direction, numbered relays and the two endpoints.
+/// The map tiles with the route drawn on top: forward legs solid orange and return legs dashed blue,
+/// like the in-app map, with an arrow for direction, SNR labels on the forward legs, numbered relays
+/// and the two endpoints.
 struct TraceRouteShareMap: View {
 	let frame: TraceRouteShareModel.MapFrame
 	let image: UIImage
 	let legs: TraceRouteLegs
+	/// Minimum gap between hop badges in points. Nil keeps the layout's default share of the
+	/// map width, which suits the share card's map; a much smaller map sets this so the
+	/// fixed-size badges don't land on each other.
+	var minimumBadgeGap: CGFloat?
 
 	private var visibleRect: MKMapRect { frame.rect }
+
+	private var visibleBadges: [TraceRouteMapLayout.Badge] {
+		guard let minimumBadgeGap, frame.size.width > 0 else {
+			return frame.layout.visibleBadges(in: visibleRect)
+		}
+		let fraction = max(TraceRouteMapLayout.badgeMinSeparationFraction, Double(minimumBadgeGap / frame.size.width))
+		return frame.layout.visibleBadges(in: visibleRect, separationFraction: fraction)
+	}
 
 	var body: some View {
 		ZStack(alignment: .topLeading) {
@@ -560,7 +594,7 @@ struct TraceRouteShareMap: View {
 					.frame(width: 11, height: 11)
 					.position(frame.point(for: relay.coordinate))
 			}
-			ForEach(frame.layout.visibleBadges(in: visibleRect), id: \.id) { badge in
+			ForEach(visibleBadges, id: \.id) { badge in
 				hopBadge(number: badge.number, isBack: badge.isBack)
 					.position(frame.point(for: badge.coordinate))
 					.offset(x: 11, y: badge.isBack ? 11 : -11)
@@ -590,7 +624,7 @@ struct TraceRouteShareMap: View {
 		let obstacles: [(center: CGPoint, radius: CGFloat)] =
 			endpoints.map { (frame.point(for: $0.coordinate), 15) }
 			+ relayCoordinates.map { (frame.point(for: $0.coordinate), 6) }
-			+ frame.layout.visibleBadges(in: visibleRect).map { badge in
+			+ visibleBadges.map { badge in
 				let point = frame.point(for: badge.coordinate)
 				return (CGPoint(x: point.x + 11, y: point.y + (badge.isBack ? 11 : -11)), 8)
 			}
@@ -658,14 +692,13 @@ struct TraceRouteShareMap: View {
 			var from = frame.point(for: segment.from)
 			var to = frame.point(for: segment.to)
 			// When both directions use a leg, push each to its own side so neither hides the other.
-			let shared = segments.contains { $0.isBack != segment.isBack && $0.fromNum == segment.toNum && $0.toNum == segment.fromNum }
-			if shared {
+			if frame.layout.sharesLeg(segment) {
 				let length = max(hypot(to.x - from.x, to.y - from.y), 0.001)
 				let offset = CGPoint(x: -(to.y - from.y) / length * 4, y: (to.x - from.x) / length * 4)
 				from = CGPoint(x: from.x + offset.x, y: from.y + offset.y)
 				to = CGPoint(x: to.x + offset.x, y: to.y + offset.y)
 			}
-			let color = color(snr: segment.snr)
+			let color = segment.isBack ? TraceRouteColors.back : TraceRouteColors.forward
 			var path = Path()
 			path.move(to: from)
 			path.addLine(to: to)
@@ -707,18 +740,16 @@ struct TraceRouteShareMap: View {
 			.fixedSize()
 	}
 
+	/// A relay's number, like the in-app map and Vision Pro: filled orange on the way out, a blue
+	/// ring on the way back.
 	private func hopBadge(number: Int, isBack: Bool) -> some View {
 		Text(verbatim: "\(number)")
 			.font(.system(size: 9.5, weight: .bold, design: .rounded))
 			.monospacedDigit()
-			.foregroundStyle(isBack ? Color.black : Color.white)
+			// Black on the orange: white on it is too faint for digits this small.
+			.foregroundStyle(isBack ? Color.white : Color.black)
 			.frame(minWidth: 16, minHeight: 16)
-			.background(Circle().fill(isBack ? Color.white : Color.black.opacity(0.85)))
-			.overlay(
-				Circle().strokeBorder(
-					isBack ? Color.black : Color.white,
-					style: StrokeStyle(lineWidth: 1.25, dash: isBack ? [2, 2] : [])
-				)
-			)
+			.background(Circle().fill(isBack ? Color.black.opacity(0.75) : TraceRouteColors.forward))
+			.overlay(Circle().strokeBorder(isBack ? TraceRouteColors.back : Color.white, lineWidth: isBack ? 1.75 : 1.25))
 	}
 }

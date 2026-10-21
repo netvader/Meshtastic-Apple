@@ -45,6 +45,8 @@ extension MeshPackets {
 				return false
 			}
 			let deletedNodes = staleNodes.count
+			TelemetryEntity.deleteAll(forNodes: staleNodes.map(\.num), in: modelContext)
+			NeighborLinkEntity.deleteAll(forNodes: staleNodes.map(\.num), in: modelContext)
 			for node in staleNodes {
 				modelContext.delete(node)
 			}
@@ -100,9 +102,11 @@ extension MeshPackets {
 		)
 		descriptor.fetchLimit = 1
 		do {
-			if let node = try modelContext.fetch(descriptor).first {
-				let toDelete = node.telemetries.filter { $0.metricsType == metricsType }
-				for entity in toDelete {
+			if try modelContext.fetch(descriptor).first != nil {
+				let telemetryDescriptor = FetchDescriptor<TelemetryEntity>(
+					predicate: TelemetryEntity.predicate(forNode: num, metricsType: metricsType)
+				)
+				for entity in try modelContext.fetch(telemetryDescriptor) {
 					modelContext.delete(entity)
 				}
 				try modelContext.save()
@@ -275,6 +279,12 @@ extension MeshPackets {
 		// Skip routing packets with no rxTime — these are locally-generated implicit ACKs
 		// that don't represent actual RF contact with the remote node.
 		let isImplicitAck = packet.decoded.portnum == .routingApp && packet.rxTime == 0
+		// After a node db download (firmware 2.8+) the radio resends packets it stored earlier. They are
+		// marked as LoRa but carry no RSSI, which every real reception has, and their rxTime is when the
+		// radio last heard the node. They say nothing new about signal, hops or when it was heard.
+		let isReplay = packet.transportMechanism == .transportLora && !packet.hasRxRssi
+		// Signal values only mean something for a packet this radio just received over the air.
+		let isLiveLora = packet.hasRxRssi && !packet.viaMqtt
 		
 		let num = Int64(packet.from)
 		var descriptor = FetchDescriptor<NodeInfoEntity>(
@@ -290,16 +300,19 @@ extension MeshPackets {
 				// Single source of truth for lastHeard on received packets: this runs for
 				// every packet (mirroring firmware NodeDB::updateFrom), so the per-packet
 				// handlers no longer touch lastHeard for remote nodes.
-				if !isImplicitAck {
-					if packet.rxTime > 0 {
-						node.lastHeard = Date(timeIntervalSince1970: TimeInterval(Int64(packet.rxTime)))
-					} else {
-						node.lastHeard = Date()
+				// Never moved backwards: a packet with an older rxTime doesn't make the node heard earlier.
+				// A stored time in the future came from a wrong clock, so any real packet replaces it.
+				if !isImplicitAck && !isReplay {
+					let heard = packet.rxTime > 0 ? Date(timeIntervalSince1970: TimeInterval(Int64(packet.rxTime))) : Date()
+					if node.lastHeard.map({ heard > $0 || $0 > Date() }) ?? true {
+						node.lastHeard = heard
 					}
 				}
 				
-				node.snr = packet.rxSnr
-				node.rssi = packet.rxRssi
+				if isLiveLora {
+					node.snr = packet.rxSnr
+					node.rssi = packet.rxRssi
+				}
 				node.viaMqtt = packet.viaMqtt
 				// Heard over RF just now, so heard on the current settings. Mirrors the firmware, which
 				// sets the flag when it hears the node, so the row clears before the next node db dump.
@@ -310,7 +323,8 @@ extension MeshPackets {
 					node.heardOnCurrentLora = true
 				}
 				
-				if packet.hopStart != 0 && packet.hopLimit <= packet.hopStart {
+				// MQTT packets still count: their hops are to the gateway, as on the radio.
+				if !isReplay && packet.hopStart != 0 && packet.hopLimit <= packet.hopStart {
 					node.hopsAway = Int32(truncatingIfNeeded: packet.hopStart - packet.hopLimit)
 					Logger.data.debug("💾 [updateAnyPacketFrom] Updating node \(packet.from.toHex(), privacy: .public) hopsAway=\(node.hopsAway)")
 				}
@@ -539,7 +553,7 @@ extension MeshPackets {
 						telemetry.voltage = nodeInfoMessage.deviceMetrics.voltage
 						telemetry.channelUtilization = nodeInfoMessage.deviceMetrics.channelUtilization
 						telemetry.airUtilTx = nodeInfoMessage.deviceMetrics.airUtilTx
-						telemetry.nodeTelemetry = fetchedNode[0]
+						telemetry.nodeNum = fetchedNode[0].num
 					}
 					if nodeInfoMessage.hasUser {
 						fetchedNode[0].user?.userId = nodeInfoMessage.num.toHex()
@@ -802,7 +816,7 @@ extension MeshPackets {
 		savePendingChanges()
 	}
 
-	func upsertBluetoothConfigPacket(config: Config.BluetoothConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertBluetoothConfigPacket(config: Config.BluetoothConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		
 		let logString = String.localizedStringWithFormat("Bluetooth config received: %@".localized, String(nodeNum))
 		Logger.admin.info("📶 \(logString, privacy: .public)")
@@ -826,7 +840,7 @@ extension MeshPackets {
 					fetchedNode[0].bluetoothConfig?.mode = Int32(config.mode.rawValue)
 					fetchedNode[0].bluetoothConfig?.fixedPin = Int32(truncatingIfNeeded: config.fixedPin)
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -841,7 +855,7 @@ extension MeshPackets {
 		}
 	}
 	
-	func upsertDeviceConfigPacket(config: Config.DeviceConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertDeviceConfigPacket(config: Config.DeviceConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		
 		let logString = String.localizedStringWithFormat("Device config received: %@".localized, String(nodeNum))
 		Logger.admin.info("📟 \(logString, privacy: .public)")
@@ -878,7 +892,7 @@ extension MeshPackets {
 					fetchedNode[0].deviceConfig?.isManaged = config.isManaged
 					fetchedNode[0].deviceConfig?.tzdef = config.tzdef
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -891,7 +905,7 @@ extension MeshPackets {
 		}
 	}
 	
-	func upsertDisplayConfigPacket(config: Config.DisplayConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertDisplayConfigPacket(config: Config.DisplayConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		
 		let logString = String.localizedStringWithFormat("Display config received: %@".localized, nodeNum.toHex())
 		Logger.data.info("🖥️ \(logString, privacy: .public)")
@@ -931,7 +945,7 @@ extension MeshPackets {
 					fetchedNode[0].displayConfig?.headingBold = config.headingBold
 					fetchedNode[0].displayConfig?.use12HClock = config.use12HClock
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -947,7 +961,7 @@ extension MeshPackets {
 		}
 	}
 	
-	func upsertLoRaConfigPacket(config: Config.LoRaConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertLoRaConfigPacket(config: Config.LoRaConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		
 		let logString = String.localizedStringWithFormat("LoRa config received: %@".localized, nodeNum.toHex())
 		Logger.data.info("📻 \(logString, privacy: .public)")
@@ -1001,7 +1015,7 @@ extension MeshPackets {
 					fetchedNode[0].loRaConfig?.okToMqtt = config.configOkToMqtt
 					fetchedNode[0].loRaConfig?.sx126xRxBoostedGain = config.sx126XRxBoostedGain
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1016,7 +1030,7 @@ extension MeshPackets {
 		}
 	}
 	
-	func upsertNetworkConfigPacket(config: Config.NetworkConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertNetworkConfigPacket(config: Config.NetworkConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		
 		let logString = String.localizedStringWithFormat("Network config received: %@".localized, String(nodeNum))
 		Logger.data.info("🌐 \(logString, privacy: .public)")
@@ -1058,7 +1072,7 @@ extension MeshPackets {
 					fetchedNode[0].networkConfig?.subnet = Int32(bitPattern: config.ipv4Config.subnet)
 					fetchedNode[0].networkConfig?.dns = Int32(bitPattern: config.ipv4Config.dns)
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1073,7 +1087,7 @@ extension MeshPackets {
 		}
 	}
 	
-	func upsertPositionConfigPacket(config: Config.PositionConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertPositionConfigPacket(config: Config.PositionConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		
 		let logString = String.localizedStringWithFormat("Position config received: %@".localized, String(nodeNum))
 		Logger.data.info("🗺️ \(logString, privacy: .public)")
@@ -1117,7 +1131,7 @@ extension MeshPackets {
 					fetchedNode[0].positionConfig?.gpsUpdateInterval = Int32(truncatingIfNeeded: config.gpsUpdateInterval)
 					fetchedNode[0].positionConfig?.positionFlags = Int32(truncatingIfNeeded: config.positionFlags)
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1132,7 +1146,7 @@ extension MeshPackets {
 		}
 	}
 	
-	func upsertPowerConfigPacket(config: Config.PowerConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertPowerConfigPacket(config: Config.PowerConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		let logString = String.localizedStringWithFormat("Power config received: %@".localized, String(nodeNum))
 		Logger.data.info("🗺️ \(logString, privacy: .public)")
 		
@@ -1163,7 +1177,7 @@ extension MeshPackets {
 					fetchedNode[0].powerConfig?.onBatteryShutdownAfterSecs = Int32(truncatingIfNeeded: config.onBatteryShutdownAfterSecs)
 					fetchedNode[0].powerConfig?.waitBluetoothSecs = Int32(truncatingIfNeeded: config.waitBluetoothSecs)
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1188,7 +1202,7 @@ extension MeshPackets {
 		entity.adminKey3 = adminKeys.count > 2 ? adminKeys[2] : nil
 	}
 
-	func upsertSecurityConfigPacket(config: Config.SecurityConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertSecurityConfigPacket(config: Config.SecurityConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 
 		let logString = String.localizedStringWithFormat("Security config received: @".localized, String(nodeNum))
 		Logger.data.info("🛡️ \(logString, privacy: .public)")
@@ -1222,7 +1236,7 @@ extension MeshPackets {
 					securityConfig.adminChannelEnabled = config.adminChannelEnabled
 					securityConfig.packetSignaturePolicy = Int32(config.packetSignaturePolicy.rawValue)
 				}
-				if sessionPasskey?.count != 0 {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1237,7 +1251,7 @@ extension MeshPackets {
 		}
 	}
 	
-	func upsertAudioModuleConfigPacket(config: ModuleConfig.AudioConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertAudioModuleConfigPacket(config: ModuleConfig.AudioConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 
 		let logString = String.localizedStringWithFormat("Audio module config received: %@".localized, String(nodeNum))
 		Logger.data.info("🔊 \(logString, privacy: .public)")
@@ -1268,7 +1282,7 @@ extension MeshPackets {
 					fetchedNode[0].audioConfig?.i2sDin = Int32(truncatingIfNeeded: config.i2SDin)
 					fetchedNode[0].audioConfig?.i2sSck = Int32(truncatingIfNeeded: config.i2SSck)
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1283,7 +1297,7 @@ extension MeshPackets {
 		}
 	}
 
-	func upsertAmbientLightingModuleConfigPacket(config: ModuleConfig.AmbientLightingConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertAmbientLightingModuleConfigPacket(config: ModuleConfig.AmbientLightingConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		
 		let logString = String.localizedStringWithFormat("Ambient Lighting module config received: %@".localized, String(nodeNum))
 		Logger.data.info("🏮 \(logString, privacy: .public)")
@@ -1306,7 +1320,7 @@ extension MeshPackets {
 				fetchedNode[0].ambientLightingConfig?.red = Int32(truncatingIfNeeded: config.red)
 				fetchedNode[0].ambientLightingConfig?.green = Int32(truncatingIfNeeded: config.green)
 				fetchedNode[0].ambientLightingConfig?.blue = Int32(truncatingIfNeeded: config.blue)
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1321,7 +1335,7 @@ extension MeshPackets {
 		}
 	}
 	
-	func upsertCannedMessagesModuleConfigPacket(config: ModuleConfig.CannedMessageConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertCannedMessagesModuleConfigPacket(config: ModuleConfig.CannedMessageConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		
 		let logString = String.localizedStringWithFormat("Canned Message module config received: %@".localized, String(nodeNum))
 		Logger.data.info("🥫 \(logString, privacy: .public)")
@@ -1361,7 +1375,7 @@ extension MeshPackets {
 					fetchedNode[0].cannedMessageConfig?.inputbrokerEventCcw = Int32(config.inputbrokerEventCcw.rawValue)
 					fetchedNode[0].cannedMessageConfig?.inputbrokerEventPress = Int32(config.inputbrokerEventPress.rawValue)
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1376,7 +1390,7 @@ extension MeshPackets {
 		}
 	}
 
-	func upsertDetectionSensorModuleConfigPacket(config: ModuleConfig.DetectionSensorConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertDetectionSensorModuleConfigPacket(config: ModuleConfig.DetectionSensorConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		
 		let logString = String.localizedStringWithFormat("Detection Sensor module config received: %@".localized, String(nodeNum))
 		Logger.data.info("🕵️ \(logString, privacy: .public)")
@@ -1410,7 +1424,7 @@ extension MeshPackets {
 					fetchedNode[0].detectionSensorConfig?.minimumBroadcastSecs = Int32(truncatingIfNeeded: config.minimumBroadcastSecs)
 					fetchedNode[0].detectionSensorConfig?.stateBroadcastSecs = Int32(truncatingIfNeeded: config.stateBroadcastSecs)
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1427,7 +1441,7 @@ extension MeshPackets {
 		}
 	}
 
-	func upsertMeshBeaconModuleConfigPacket(config: ModuleConfig.MeshBeaconConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertMeshBeaconModuleConfigPacket(config: ModuleConfig.MeshBeaconConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 
 		let logString = String.localizedStringWithFormat("Mesh Beacon module config received: %@".localized, String(nodeNum))
 		Logger.data.info("📡 \(logString, privacy: .public)")
@@ -1447,29 +1461,32 @@ extension MeshPackets {
 					modelContext.insert(entity)
 					fetchedNode[0].meshBeaconConfig = entity
 				}
-				entity.flags = Int32(truncatingIfNeeded: config.flags)
-				entity.broadcastMessage = config.broadcastMessage
-				entity.broadcastOfferChannelName = config.hasBroadcastOfferChannel ? config.broadcastOfferChannel.name : ""
-				entity.broadcastOfferChannelPSK = config.hasBroadcastOfferChannel ? config.broadcastOfferChannel.psk : Data()
-				entity.broadcastOfferRegion = Int32(config.broadcastOfferRegion.rawValue)
-				entity.broadcastOfferPreset = config.hasBroadcastOfferPreset ? Int32(config.broadcastOfferPreset.rawValue) : -1
-				entity.broadcastIntervalSecs = config.broadcastIntervalSecs > 0 ? Int32(truncatingIfNeeded: config.broadcastIntervalSecs) : 3600
+				let values = MeshBeaconConfigValues(config: config)
+				entity.flags = values.flags
+				entity.broadcastMessage = values.message
+				entity.broadcastOfferChannelName = values.offerChannelName
+				entity.broadcastOfferChannelPSK = values.offerChannelPSK
+				entity.broadcastOfferRegion = values.offerRegion
+				entity.broadcastOfferPreset = values.offerPreset
+				entity.broadcastOfferFrequencySlot = values.offerFrequencySlot
+				entity.broadcastIntervalSecs = values.intervalSecs
 
 				// Rebuild the multi-target list from the incoming config (cascade replaces the old rows).
 				for old in entity.broadcastTargets {
 					modelContext.delete(old)
 				}
-				entity.broadcastTargets = config.broadcastTargets.map { target in
+				entity.broadcastTargets = values.targets.map { target in
 					let newTarget = BroadcastTargetEntity(
-						preset: target.hasPreset ? Int32(target.preset.rawValue) : -1,
-						region: Int32(target.region.rawValue),
-						channelIndex: target.hasChannelIndex ? Int32(truncatingIfNeeded: target.channelIndex) : -1
+						preset: target.preset,
+						region: target.region,
+						channelIndex: target.channelIndex,
+						frequencySlot: target.frequencySlot
 					)
 					modelContext.insert(newTarget)
 					return newTarget
 				}
 
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1486,7 +1503,7 @@ extension MeshPackets {
 		}
 	}
 
-	func upsertExternalNotificationModuleConfigPacket(config: ModuleConfig.ExternalNotificationConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertExternalNotificationModuleConfigPacket(config: ModuleConfig.ExternalNotificationConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		
 		let logString = String.localizedStringWithFormat("External Notification module config received: %@".localized, String(nodeNum))
 		Logger.data.info("📣 \(logString, privacy: .public)")
@@ -1535,7 +1552,7 @@ extension MeshPackets {
 					fetchedNode[0].externalNotificationConfig?.nagTimeout = Int32(truncatingIfNeeded: config.nagTimeout)
 					fetchedNode[0].externalNotificationConfig?.useI2SAsBuzzer = config.useI2SAsBuzzer
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1550,7 +1567,7 @@ extension MeshPackets {
 		}
 	}
 	
-	func upsertNeighborInfoModuleConfigPacket(config: ModuleConfig.NeighborInfoConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertNeighborInfoModuleConfigPacket(config: ModuleConfig.NeighborInfoConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 
 		let logString = String.localizedStringWithFormat("Neighbor Info config received: %@".localized, String(nodeNum))
 		Logger.data.info("🏘️ \(logString, privacy: .public)")
@@ -1573,7 +1590,7 @@ extension MeshPackets {
 					fetchedNode[0].neighborInfoConfig?.updateInterval = Int32(truncatingIfNeeded: config.updateInterval)
 					fetchedNode[0].neighborInfoConfig?.transmitOverLora = config.transmitOverLora
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1588,7 +1605,7 @@ extension MeshPackets {
 		}
 	}
 
-	func upsertPaxCounterModuleConfigPacket(config: ModuleConfig.PaxcounterConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertPaxCounterModuleConfigPacket(config: ModuleConfig.PaxcounterConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		
 		let logString = String.localizedStringWithFormat("PAX Counter config received: %@".localized, String(nodeNum))
 		Logger.data.info("🧑‍🤝‍🧑 \(logString, privacy: .public)")
@@ -1614,7 +1631,7 @@ extension MeshPackets {
 					fetchedNode[0].paxCounterConfig?.wifiThreshold = config.wifiThreshold
 					fetchedNode[0].paxCounterConfig?.bleThreshold = config.bleThreshold
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1629,7 +1646,7 @@ extension MeshPackets {
 		}
 	}
 
-	func upsertRtttlConfigPacket(ringtone: String, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertRtttlConfigPacket(ringtone: String, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		
 		let logString = String.localizedStringWithFormat("RTTTL Ringtone config received: %@".localized, String(nodeNum))
 		Logger.data.info("⛰️ \(logString, privacy: .public)")
@@ -1649,7 +1666,7 @@ extension MeshPackets {
 				} else {
 					fetchedNode[0].rtttlConfig?.ringtone = ringtone
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1664,7 +1681,7 @@ extension MeshPackets {
 		}
 	}
 
-	func upsertMqttModuleConfigPacket(config: ModuleConfig.MQTTConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertMqttModuleConfigPacket(config: ModuleConfig.MQTTConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		
 		let logString = String.localizedStringWithFormat("MQTT module config received: %@".localized, String(nodeNum))
 		Logger.data.info("🌉 \(logString, privacy: .public)")
@@ -1708,7 +1725,7 @@ extension MeshPackets {
 					fetchedNode[0].mqttConfig?.mapPositionPrecision = Int32(truncatingIfNeeded: config.mapReportSettings.positionPrecision)
 					fetchedNode[0].mqttConfig?.mapPublishIntervalSecs = Int32(truncatingIfNeeded: config.mapReportSettings.publishIntervalSecs)
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1723,7 +1740,7 @@ extension MeshPackets {
 		}
 	}
 
-	func upsertRangeTestModuleConfigPacket(config: ModuleConfig.RangeTestConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertRangeTestModuleConfigPacket(config: ModuleConfig.RangeTestConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		
 		let logString = String.localizedStringWithFormat("Range Test module config received: %@".localized, String(nodeNum))
 		Logger.data.info("⛰️ \(logString, privacy: .public)")
@@ -1747,7 +1764,7 @@ extension MeshPackets {
 					fetchedNode[0].rangeTestConfig?.enabled = config.enabled
 					fetchedNode[0].rangeTestConfig?.save = config.save
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1762,7 +1779,7 @@ extension MeshPackets {
 		}
 	}
 
-	func upsertSerialModuleConfigPacket(config: ModuleConfig.SerialConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertSerialModuleConfigPacket(config: ModuleConfig.SerialConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		
 		let logString = String.localizedStringWithFormat("Serial module config received: %@".localized, String(nodeNum))
 		Logger.data.info("🤖 \(logString, privacy: .public)")
@@ -1794,7 +1811,7 @@ extension MeshPackets {
 					fetchedNode[0].serialConfig?.timeout = Int32(truncatingIfNeeded: config.timeout)
 					fetchedNode[0].serialConfig?.mode = Int32(config.mode.rawValue)
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1810,7 +1827,7 @@ extension MeshPackets {
 		}
 	}
 
-	func upsertStatusMessageModuleConfigPacket(config: ModuleConfig.StatusMessageConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertStatusMessageModuleConfigPacket(config: ModuleConfig.StatusMessageConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 
 		let logString = String.localizedStringWithFormat("Status Message module config received: %@".localized, String(nodeNum))
 		Logger.data.info("📬 \(logString, privacy: .public)")
@@ -1833,7 +1850,7 @@ extension MeshPackets {
 				// status too — displays prefer the live field and would otherwise show the
 				// old status until the next broadcast arrives.
 				fetchedNode[0].nodeStatus = config.nodeStatus.isEmpty ? nil : config.nodeStatus
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1879,7 +1896,7 @@ extension MeshPackets {
 		}
 	}
 
-	func upsertStoreForwardModuleConfigPacket(config: ModuleConfig.StoreForwardConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertStoreForwardModuleConfigPacket(config: ModuleConfig.StoreForwardConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		
 		let logString = String.localizedStringWithFormat("Store & Forward module config received: %@".localized, String(nodeNum))
 		Logger.data.info("📬 \(logString, privacy: .public)")
@@ -1911,7 +1928,7 @@ extension MeshPackets {
 					// reflected after the first sync and the device-profile export keeps writing the old value.
 					fetchedNode[0].storeForwardConfig?.isRouter = config.isServer
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1926,7 +1943,7 @@ extension MeshPackets {
 		}
 	}
 
-	func upsertTelemetryModuleConfigPacket(config: ModuleConfig.TelemetryConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertTelemetryModuleConfigPacket(config: ModuleConfig.TelemetryConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 		
 		let logString = String.localizedStringWithFormat("Telemetry module config received: %@".localized, String(nodeNum))
 		Logger.data.info("📈 \(logString, privacy: .public)")
@@ -1966,7 +1983,7 @@ extension MeshPackets {
 					fetchedNode[0].telemetryConfig?.powerUpdateInterval = Int32(truncatingIfNeeded: config.powerUpdateInterval)
 					fetchedNode[0].telemetryConfig?.powerScreenEnabled = config.powerScreenEnabled
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -1983,7 +2000,7 @@ extension MeshPackets {
 		}
 	}
 
-	func upsertTAKModuleConfigPacket(config: ModuleConfig.TAKConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
+	func upsertTAKModuleConfigPacket(config: ModuleConfig.TAKConfig, nodeNum: Int64, sessionPasskey: Data? = nil) {
 
 		let logString = String.localizedStringWithFormat("TAK module config received: %@".localized, String(nodeNum))
 		Logger.data.info("🎯 \(logString, privacy: .public)")
@@ -2004,7 +2021,7 @@ extension MeshPackets {
 					fetchedNode[0].takConfig?.team = Int32(config.team.rawValue)
 					fetchedNode[0].takConfig?.role = Int32(config.role.rawValue)
 				}
-				if sessionPasskey != nil {
+				if let sessionPasskey, !sessionPasskey.isEmpty {
 					fetchedNode[0].sessionPasskey = sessionPasskey
 					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
 				}
@@ -2016,60 +2033,6 @@ extension MeshPackets {
 		} catch {
 			let nsError = error as NSError
 			Logger.data.error("💥 [TAKConfigEntity] Fetching node for core data failed: \(nsError, privacy: .public)")
-		}
-	}
-
-	func upsertTrafficManagementModuleConfigPacket(config: ModuleConfig.TrafficManagementConfig, nodeNum: Int64, sessionPasskey: Data? = Data()) {
-
-		let logString = String.localizedStringWithFormat("Traffic Management module config received: %@".localized, String(nodeNum))
-		Logger.data.info("🚦 \(logString, privacy: .public)")
-
-		let fetchNum = Int64(nodeNum)
-		var fetchNodeInfoRequest = FetchDescriptor<NodeInfoEntity>(predicate: #Predicate<NodeInfoEntity> { $0.num == fetchNum })
-		fetchNodeInfoRequest.fetchLimit = 1
-		do {
-			let fetchedNode = try modelContext.fetch(fetchNodeInfoRequest)
-			if !fetchedNode.isEmpty {
-				let entity: TrafficManagementConfigEntity
-				if let existing = fetchedNode[0].trafficManagementConfig {
-					entity = existing
-				} else {
-					entity = TrafficManagementConfigEntity()
-					modelContext.insert(entity)
-					fetchedNode[0].trafficManagementConfig = entity
-				}
-
-				// 2.8 schema dropped the per-feature boolean flags and the
-				// precision-bits / hop-management fields. Each feature is now enabled
-				// implicitly by a non-zero value, so derive the stored booleans (still
-				// used by the config UI) from the incoming interval/threshold values.
-				let positionDedup = config.positionMinIntervalSecs > 0
-				let nodeinfoDirect = config.nodeinfoDirectResponseMaxHops > 0
-				let rateLimit = config.rateLimitWindowSecs > 0 || config.rateLimitMaxPackets > 0
-				let dropUnknown = config.unknownPacketThreshold > 0
-
-				entity.enabled = positionDedup || nodeinfoDirect || rateLimit || dropUnknown
-				entity.positionDedupEnabled = positionDedup
-				entity.positionMinIntervalSecs = Int32(truncatingIfNeeded: config.positionMinIntervalSecs)
-				entity.nodeinfoDirectResponse = nodeinfoDirect
-				entity.nodeinfoDirectResponseMaxHops = Int32(truncatingIfNeeded: config.nodeinfoDirectResponseMaxHops)
-				entity.rateLimitEnabled = rateLimit
-				entity.rateLimitWindowSecs = Int32(truncatingIfNeeded: config.rateLimitWindowSecs)
-				entity.rateLimitMaxPackets = Int32(truncatingIfNeeded: config.rateLimitMaxPackets)
-				entity.dropUnknownEnabled = dropUnknown
-				entity.unknownPacketThreshold = Int32(truncatingIfNeeded: config.unknownPacketThreshold)
-				if sessionPasskey != nil {
-					fetchedNode[0].sessionPasskey = sessionPasskey
-					fetchedNode[0].sessionExpiration = Date().addingTimeInterval(300)
-				}
-				savePendingChanges()
-				Logger.data.info("💾 [TrafficManagementConfigEntity] Updated for node: \(nodeNum.toHex(), privacy: .public)")
-			} else {
-				Logger.data.error("💥 [TrafficManagementConfigEntity] No Nodes found in local database matching node \(nodeNum.toHex(), privacy: .public) unable to save Traffic Management Module Config")
-			}
-		} catch {
-			let nsError = error as NSError
-			Logger.data.error("💥 [TrafficManagementConfigEntity] Fetching node for core data failed: \(nsError, privacy: .public)")
 		}
 	}
 }

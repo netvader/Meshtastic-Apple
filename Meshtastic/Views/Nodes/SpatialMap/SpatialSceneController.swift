@@ -46,9 +46,10 @@ final class SpatialSceneController {
 	/// Holds the coverage overlay, in model units like the terrain, so it is not counter-scaled.
 	let coverageContainer = Entity()
 	let nodesContainer = Entity()
-	let linksContainer = Entity()
 	let selectionContainer = Entity()
 	let trafficContainer = Entity()
+	let route = SpatialRouteDrawing()
+	let links = SpatialLinkDrawing()
 	let wheel = SpatialWheelEntity()
 	var updateSubscription: EventSubscription?
 
@@ -105,7 +106,6 @@ final class SpatialSceneController {
 	private static let haloMesh = MeshResource.generateCylinder(height: 0.0008, radius: 0.014)
 	private static let ringMesh = MeshResource.generateCylinder(height: 0.0012, radius: 0.02)
 	private static let tetherMesh = MeshResource.generateCylinder(height: 1, radius: 0.0006)
-	private static let linkMesh = MeshResource.generateBox(size: [0.0016, 0.0016, 1])
 	/// A pin's hit target is a ball around the head, up to 2.5 cm across, and a thinner capsule down
 	/// the stem, set on the head so the hover highlight shows on the part people look at. Both
 	/// narrow where pins crowd together so neighbors don't take each other's taps.
@@ -122,8 +122,6 @@ final class SpatialSceneController {
 	private var appliedPlacementRevision = -1
 	private(set) var placement: SpatialPlacement?
 	private var labelEntities: [Int64: Entity] = [:]
-	private var linkEntities: [String: ModelEntity] = [:]
-	private var routeEntities: [ModelEntity] = []
 	private let ring: ModelEntity
 	private let tether: ModelEntity
 	private var detailEntity: Entity?
@@ -162,7 +160,8 @@ final class SpatialSceneController {
 		terrainAnchor.addChild(placeholder)
 		terrainAnchor.addChild(coverageContainer)
 		terrainAnchor.addChild(nodesContainer)
-		terrainAnchor.addChild(linksContainer)
+		terrainAnchor.addChild(links.root)
+		terrainAnchor.addChild(route.root)
 		terrainAnchor.addChild(selectionContainer)
 		terrainAnchor.addChild(trafficContainer)
 		selectionContainer.addChild(ring)
@@ -454,10 +453,6 @@ final class SpatialSceneController {
 		pin.halo.scale = SIMD3(scale, 1, scale)
 	}
 
-	func forEachPin(_ body: (Int64) -> Void) {
-		for num in pins.keys { body(num) }
-	}
-
 	// MARK: Labels
 
 	func apply(labels: [Int64], attachments: RealityViewAttachments) {
@@ -570,6 +565,10 @@ extension SpatialSceneController {
 		pin.target.components.set(OpacityComponent(opacity: node.isOnline ? 1 : 0.6))
 	}
 
+	func forEachPin(_ body: (Int64) -> Void) {
+		for num in pins.keys { body(num) }
+	}
+
 	static let towerBaseMesh = MeshResource.generateCylinder(height: towerBaseHeight, radius: towerBaseRadius)
 
 	/// A tower's hit target is one capsule from its base to its top, in the tower's space, which
@@ -634,59 +633,50 @@ extension SpatialSceneController {
 }
 
 extension SpatialSceneController {
-	// MARK: Links and routes
+	// MARK: Routes
 
-	func apply(links: [SpatialLinkSnapshot], preset: ModemPresets) {
-		guard placement != nil else { return }
-		var wanted = Set<String>()
-		for link in links {
-			guard let pinA = pins[link.a], let pinB = pins[link.b], pinA.shown, pinB.shown else { continue }
-			let a = pinA.holder.position, b = pinB.holder.position
-			let start = a + [0, pinA.top * counterScale, 0], end = b + [0, pinB.top * counterScale, 0]
-			for (suffix, from, to, snr) in [(">", start, end, link.snrAtoB), ("<", end, start, link.snrBtoA)] {
-				guard let snr else { continue }
-				let key = link.id + suffix
-				wanted.insert(key)
-				let entity = linkEntities[key] ?? {
-					let e = ModelEntity(mesh: Self.linkMesh, materials: [UnlitMaterial(color: .white)])
-					linksContainer.addChild(e)
-					linkEntities[key] = e
-					return e
-				}()
-				// Each direction gets its own half of the line, colored by the SNR heard at its end.
-				Self.lay(entity, from: from, to: simd_mix(from, to, SIMD3(repeating: 0.5)))
-				entity.model?.materials = [UnlitMaterial(color: UIColor(getSnrColor(snr: snr, preset: preset)))]
+	/// Draws the picked trace route, or clears it when `route` is nil. Each node's end of a leg is
+	/// the top of its pin; a node with no pin, such as one outside the area shown, uses where it
+	/// was when traced. Legs running past the rim stop at it.
+	func apply(route snapshot: SpatialRouteSnapshot?, attachments: RealityViewAttachments, attachmentIDs: [String]) {
+		guard let snapshot, let placement else {
+			route.update(route: nil, anchors: [:], counterScale: counterScale, clip: SpatialRouteClip(scale: 1, translation: .zero, radius: 0))
+			return
+		}
+		let clip = SpatialRouteClip(scale: preview.scale, translation: preview.translation, radius: placement.diskRadius)
+		var anchors: [Int64: SpatialRouteDrawing.Anchor] = [:]
+		for (num, point) in snapshot.pointsByNum {
+			if let pin = pins[num] {
+				anchors[num] = .init(foot: pin.holder.position, top: pin.holder.position + [0, pin.top * counterScale, 0], onDisk: pin.shown)
+			} else {
+				let foot = placement.position(point.coordinate)
+				anchors[num] = .init(foot: foot, top: foot + [0, Self.pinTop * counterScale, 0], onDisk: clip.isInside(foot))
 			}
 		}
-		for (key, entity) in linkEntities where !wanted.contains(key) {
-			entity.removeFromParent()
-			linkEntities[key] = nil
+		route.update(route: snapshot, anchors: anchors, counterScale: counterScale, clip: clip)
+		route.place(attachments: attachments, ids: attachmentIDs)
+	}
+
+	// MARK: Links
+
+	/// Draws the direct links between pins, cut at the rim, or clears them when `snapshots` is
+	/// empty. Both ends need a pin; the links are built from the nodes on the map, so they have one.
+	func apply(links snapshots: [SpatialLinkSnapshot], pills: [SpatialLinkPill], preset: ModemPresets, attachments: RealityViewAttachments, attachmentIDs: [String]) {
+		links.preset = preset
+		guard !snapshots.isEmpty, let placement else {
+			links.update(links: [], pills: [], anchors: [:], counterScale: counterScale, clip: SpatialRouteClip(scale: 1, translation: .zero, radius: 0))
+			return
 		}
-	}
-
-	static func lay(_ entity: ModelEntity, from: SIMD3<Float>, to: SIMD3<Float>) {
-		let direction = to - from
-		let length = simd_length(direction)
-		entity.position = from + direction / 2
-		entity.scale = [1, 1, max(length, 0.0005)]
-		entity.orientation = length > 0 ? simd_quatf(from: [0, 0, 1], to: direction / length) : simd_quatf(angle: 0, axis: [0, 1, 0])
-	}
-
-	/// Draws the legs a flyover is about to follow; empty clears them.
-	func showRoute(legs: [[SIMD3<Float>]], color: UIColor) {
-		for entity in routeEntities { entity.removeFromParent() }
-		routeEntities = []
-		for leg in legs where leg.count >= 2 {
-			for i in 0..<(leg.count - 1) {
-				let entity = ModelEntity(mesh: Self.linkMesh, materials: [Self.transparentMaterial(color, opacity: 0.85)])
-				entity.scale = [1.6, 1.6, 1]
-				Self.lay(entity, from: leg[i], to: leg[i + 1])
-				entity.scale.x = 1.6
-				entity.scale.y = 1.6
-				trafficContainer.addChild(entity)
-				routeEntities.append(entity)
+		let clip = SpatialRouteClip(scale: preview.scale, translation: preview.translation, radius: placement.diskRadius)
+		var anchors: [Int64: SpatialRouteDrawing.Anchor] = [:]
+		for link in snapshots {
+			for num in [link.a, link.b] where anchors[num] == nil {
+				guard let pin = pins[num] else { continue }
+				anchors[num] = .init(foot: pin.holder.position, top: pin.holder.position + [0, pin.top * counterScale, 0], onDisk: pin.shown)
 			}
 		}
+		links.update(links: snapshots, pills: pills, anchors: anchors, counterScale: counterScale, clip: clip)
+		links.place(attachments: attachments, ids: attachmentIDs)
 	}
 
 	// MARK: User transform

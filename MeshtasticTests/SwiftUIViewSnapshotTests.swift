@@ -734,7 +734,9 @@ struct NodeListItemCompactSnapshotTests {
 			let telemetry = TelemetryEntity()
 			telemetry.batteryLevel = battery
 			telemetry.distance = 100
-			node.telemetries = [telemetry]
+			telemetry.time = Date()
+			telemetry.nodeNum = num
+			sharedModelContainer.mainContext.insert(telemetry)
 		}
 		if let lat = latitudeI, let lon = longitudeI {
 			let position = PositionEntity()
@@ -813,6 +815,7 @@ struct NodeListItemCompactSnapshotTests {
 		let node = makeNode(
 			longName: "Sneaky Little Roof Node 03",
 			shortName: "SLN",
+			num: 0x5A11_0001,
 			hopsAway: 1,
 			batteryLevel: 99,
 			favorite: true,
@@ -860,6 +863,7 @@ struct NodeListItemCompactSnapshotTests {
 		let node = makeNode(
 			longName: "Power Station",
 			shortName: "PWR",
+			num: 0x5A11_0002,
 			hopsAway: 0,
 			batteryLevel: 101,
 			lastHeard: Date(timeIntervalSinceNow: -5)
@@ -1037,7 +1041,9 @@ struct NodeListItemSnapshotTests {
 			let telemetry = TelemetryEntity()
 			telemetry.batteryLevel = battery
 			telemetry.distance = 100
-			node.telemetries = [telemetry]
+			telemetry.time = Date()
+			telemetry.nodeNum = num
+			sharedModelContainer.mainContext.insert(telemetry)
 		}
 		if let lat = latitudeI, let lon = longitudeI {
 			let position = PositionEntity()
@@ -1581,7 +1587,10 @@ struct NodeDetailSnapshotTests {
 		envTelemetry.relativeHumidity = 55.0
 		envTelemetry.barometricPressure = 1013.25
 
-		node.telemetries = [deviceTelemetry, envTelemetry]
+		deviceTelemetry.nodeNum = node.num
+		envTelemetry.nodeNum = node.num
+		context.insert(deviceTelemetry)
+		context.insert(envTelemetry)
 		context.insert(node)
 
 		let view = NodeDetail(node: node, nodeNum: node.num)
@@ -1656,7 +1665,46 @@ struct MQTTConfigSnapshotTests {
 				.environmentObject(AccessoryManager.shared)
 				.modelContainer(PersistenceController.preview.container)
 		}
-		await assertViewSnapshot(of: view, width: 390, height: 900, named: "mqttConfig", forDocs: true)
+		// Tall enough to show the Find Topics button the guide describes.
+		await assertViewSnapshot(of: view, width: 390, height: 1040, named: "mqttConfig", forDocs: true)
+	}
+
+	@Test("Topic finder sheet, finished sample")
+	@MainActor
+	func topicFinderSheet() async throws {
+		let node = try makeNode()
+		let lora = LoRaConfigEntity()
+		lora.regionCode = 1
+		sharedModelContainer.mainContext.insert(lora)
+		node.loRaConfig = lora
+		let mqtt = try #require(node.mqttConfig)
+		let config = ModuleConfig.MQTTConfig(entity: mqtt)
+		// A finished sample with two roots and one map report, driven through the handlers: no socket.
+		let sampler = MqttTopicSampler()
+		sampler.beginConnecting(settings: .init(config: config), regionTopic: "msh/US")
+		sampler.handleConnAck(accepted: true, description: "")
+		sampler.handleSubAck(granted: sampler.filters, failed: [])
+		sampler.handleMessage(topic: "msh/US/WA/2/e/LongFast/!a1b2c3d4", payload: Data())
+		sampler.handleMessage(topic: "msh/US/WA/seattle/2/e/LongFast/!0badf00d", payload: Data())
+		var report = MapReport()
+		report.latitudeI = 476_062_000
+		report.longitudeI = -1_223_321_000
+		report.numOnlineLocalNodes = 12
+		var data = DataMessage()
+		data.portnum = .mapReportApp
+		data.payload = try report.serializedData()
+		var envelope = ServiceEnvelope()
+		envelope.gatewayID = "!0badf00d"
+		envelope.channelID = "LongFast"
+		var packet = MeshPacket()
+		packet.payloadVariant = .decoded(data)
+		envelope.packet = packet
+		sampler.handleMessage(topic: "msh/US/WA/seattle/2/map/", payload: try envelope.serializedData())
+		sampler.stop()
+		let view = MQTTTopicFinder(config: .constant(config), node: node, autoStart: false, sampler: sampler)
+			.environmentObject(AccessoryManager.shared)
+			.modelContainer(sharedModelContainer)
+		await assertViewSnapshot(of: view, width: 390, height: 1200, named: "mqttTopicFinder")
 	}
 }
 
@@ -2685,48 +2733,6 @@ struct PowerConfigSnapshotTests {
 				.modelContainer(sharedModelContainer)
 		}
 		await assertViewSnapshot(of: view, width: 390, height: 700, named: "powerConfigForm")
-	}
-}
-
-@Suite("TrafficManagementConfig Snapshots")
-struct TrafficManagementConfigSnapshotTests {
-
-	@MainActor
-	private func makeNode() throws -> NodeInfoEntity {
-		let context = sharedModelContainer.mainContext
-		let node = NodeInfoEntity()
-		node.num = 0xC0FF_EE0D
-		context.insert(node)
-		let user = UserEntity()
-		user.num = node.num
-		user.longName = "Snapshot Traffic Node"
-		user.shortName = "STRF"
-		context.insert(user)
-		node.user = user
-		let traffic = TrafficManagementConfigEntity()
-		traffic.positionMinIntervalSecs = 18000
-		traffic.nodeinfoDirectResponseMaxHops = 2
-		traffic.rateLimitWindowSecs = 60
-		traffic.rateLimitMaxPackets = 20
-		traffic.unknownPacketThreshold = 5
-		context.insert(traffic)
-		node.trafficManagementConfig = traffic
-		try context.save()
-		return node
-	}
-
-	@Test("Traffic Management form, every feature on")
-	@MainActor
-	func trafficManagementForm() async throws {
-		let node = try makeNode()
-		AccessoryManager.shared.isConnected = true
-		AccessoryManager.shared.activeDeviceNum = node.num
-		let view = NavigationView {
-			TrafficManagementConfig(node: node)
-				.environmentObject(AccessoryManager.shared)
-				.modelContainer(sharedModelContainer)
-		}
-		await assertViewSnapshot(of: view, width: 390, height: 1500, named: "trafficManagementConfigForm")
 	}
 }
 

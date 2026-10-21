@@ -13,7 +13,7 @@ import MeshtasticProtobufs
 /// does. Pass nil for a node whose firmware the app does not know.
 private func testEnvironment(firmware version: String?) -> ConfigFormEnvironment {
 	ConfigFormEnvironment(
-		node: nil, isConnected: version != nil, isConnectedNode: version != nil, isDIYHardware: false,
+		node: nil, isConnected: version != nil, isConnectedNode: version != nil, hasFixedGPS: false,
 		hasWifi: false, hasEthernet: false, hasXeddsa: false,
 		firmwareAtLeast: { required in
 			guard let version else { return true }
@@ -31,7 +31,7 @@ private func environment(hwModel: Int32) -> ConfigFormEnvironment {
 	user.hwModelId = hwModel
 	node.user = user
 	return ConfigFormEnvironment(
-		node: node, isConnected: true, isConnectedNode: true, isDIYHardware: false,
+		node: node, isConnected: true, isConnectedNode: true, hasFixedGPS: false,
 		hasWifi: false, hasEthernet: false, hasXeddsa: false,
 		firmwareAtLeast: { _ in true }, isFirmwareKnown: true)
 }
@@ -74,7 +74,7 @@ struct ConfigFormOverlayTests {
 			"meshtastic.ModuleConfig.CannedMessageConfig": (0, 3),      // three sections locked while a preset is chosen
 			"meshtastic.ModuleConfig.ExternalNotificationConfig": (0, 0),
 			"meshtastic.Config.LoRaConfig": (4, 1),                    // region, preset, bandwidth and coding rate all constrain each other; the PA fan by hardware
-			"meshtastic.ModuleConfig.MQTTConfig": (4, 2),               // proxy, consent, precision, root topic; TLS by firmware, consent kept on older firmware
+			"meshtastic.ModuleConfig.MQTTConfig": (4, 2),               // proxy, consent, precision, root topic with its finder; TLS by firmware, consent kept on older firmware
 			"meshtastic.Config.NetworkConfig": (0, 6),                  // every section turns on hardware the schema cannot see
 			"meshtastic.ModuleConfig.NeighborInfoConfig": (0, 0),
 			"meshtastic.ModuleConfig.PaxcounterConfig": (0, 0),
@@ -83,8 +83,7 @@ struct ConfigFormOverlayTests {
 			"meshtastic.ModuleConfig.SerialConfig": (0, 0),
 			"meshtastic.ModuleConfig.StoreForwardConfig": (0, 0),
 			"meshtastic.ModuleConfig.TAKConfig": (0, 0),
-			"meshtastic.ModuleConfig.TelemetryConfig": (0, 1),          // the interval stands alone where there is no toggle
-			"meshtastic.ModuleConfig.TrafficManagementConfig": (0, 4)   // four feature sections behind the main switch
+			"meshtastic.ModuleConfig.TelemetryConfig": (0, 1)           // the interval stands alone where there is no toggle
 		]
 		// Without this, moving a screen to `bespoke` would silently stop checking its
 		// hatches: the loop below would just not visit it.
@@ -172,7 +171,7 @@ struct ConfigFormOverlayTests {
 	func conditionsEvaluate() throws {
 		typealias F = ModuleConfig.NeighborInfoConfig.Fields
 		var message = ModuleConfig.NeighborInfoConfig()
-		let env = ConfigFormEnvironment(node: nil, isConnected: true, isConnectedNode: true, isDIYHardware: false,
+		let env = ConfigFormEnvironment(node: nil, isConnected: true, isConnectedNode: true, hasFixedGPS: false,
 										hasWifi: false, hasEthernet: false, hasXeddsa: false, firmwareAtLeast: { _ in true },
 			isFirmwareKnown: false)
 		let enabled = ConfigFormCondition<ModuleConfig.NeighborInfoConfig>.isTrue(F.enabled)
@@ -208,6 +207,23 @@ struct ConfigFormOverlayTests {
 		#expect(message.overrideConsoleSerialPort, "the old screen dropped this; the bridge must not")
 	}
 
+	@Test("A section keeps its id when the form rebuilds its overlay")
+	func sectionIDsSurviveARebuild() throws {
+		// Forms build their overlay in `body`. A section id that changed on each build made the
+		// list recreate every row on any redraw, which closed the MQTT topic finder mid-sample.
+		func ids<M>(_ overlay: ConfigFormOverlay<M>) -> [String] { overlay.sections.map(\.id) }
+		let pairs: [([String], [String])] = [
+			(ids(MQTTConfig.overlay()), ids(MQTTConfig.overlay())),
+			(ids(LoRaConfig.overlay()), ids(LoRaConfig.overlay())),
+			(ids(PositionConfig.overlay()), ids(PositionConfig.overlay())),
+			(ids(SecurityConfig.overlay()), ids(SecurityConfig.overlay()))
+		]
+		for (first, second) in pairs {
+			#expect(first == second)
+			#expect(Set(first).count == first.count, "section ids collide: \(first)")
+		}
+	}
+
 	@Test("A search result finds the row its field is laid out in")
 	func overlayFindsTheRowForAField() throws {
 		let serial = SerialConfig.overlay()
@@ -236,20 +252,6 @@ struct ConfigFormOverlayTests {
 					"\(field.messageName)#\(field.tag) (\(entry.label)) is indexed but the form neither shows nor omits it")
 		}
 		#expect(checked > 0, "no indexed field reached a migrated screen; the lookup is not being exercised")
-	}
-
-	@Test("Traffic Management's main switch derives from the values and clears them")
-	func trafficManagementMainSwitch() {
-		var message = ModuleConfig.TrafficManagementConfig()
-		#expect(!TrafficManagementConfig.isActive(message))
-		message.rateLimitWindowSecs = 60
-		message.rateLimitMaxPackets = 20
-		#expect(TrafficManagementConfig.isActive(message))
-		#expect(!TrafficManagementConfig.isActive(TrafficManagementConfig.cleared(message)))
-		// A cleared window takes the packet count with it.
-		message.rateLimitWindowSecs = 0
-		TrafficManagementConfig.reconcile(&message)
-		#expect(message.rateLimitMaxPackets == 0)
 	}
 
 	@Test("MQTT keeps the old screen's load-time rules")
@@ -411,7 +413,7 @@ struct ConfigFormOverlayTests {
 		let overlay = NeighborInfoConfig.overlay()
 		let interval = ModuleConfig.NeighborInfoConfig.Fields.updateInterval.identity
 		let env = ConfigFormEnvironment(
-			node: nil, isConnected: true, isConnectedNode: true, isDIYHardware: false,
+			node: nil, isConnected: true, isConnectedNode: true, hasFixedGPS: false,
 			hasWifi: false, hasEthernet: false, hasXeddsa: false, firmwareAtLeast: { _ in true },
 			isFirmwareKnown: false)
 
@@ -434,7 +436,7 @@ struct ConfigFormOverlayTests {
 		let overlay = MQTTConfig.overlay()
 		let password = ModuleConfig.MQTTConfig.Fields.password.identity
 		let env = ConfigFormEnvironment(
-			node: nil, isConnected: true, isConnectedNode: true, isDIYHardware: false,
+			node: nil, isConnected: true, isConnectedNode: true, hasFixedGPS: false,
 			hasWifi: false, hasEthernet: false, hasXeddsa: false, firmwareAtLeast: { _ in true },
 			isFirmwareKnown: false)
 
@@ -615,7 +617,7 @@ struct ConfigFormFirmwareWindowTests {
 		// A node the app has never heard metadata from, and the same node once it has.
 		// Guessing wrong here takes a setting away from somebody who came to change it.
 		let unknown = ConfigFormEnvironment(
-			node: nil, isConnected: true, isConnectedNode: true, isDIYHardware: false,
+			node: nil, isConnected: true, isConnectedNode: true, hasFixedGPS: false,
 			hasWifi: false, hasEthernet: false, hasXeddsa: false,
 			firmwareAtLeast: { _ in false }, isFirmwareKnown: false)
 		let clock = Config.DisplayConfig.Fields.use12HClock.metadata

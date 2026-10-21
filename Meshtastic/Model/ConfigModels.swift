@@ -85,7 +85,7 @@ final class DetectionSensorConfigEntity {
 final class MeshBeaconConfigEntity {
 	/// Bitwise-OR of `ModuleConfig.MeshBeaconConfig.Flags` (listen / broadcast / legacy-split).
 	var flags: Int32 = 0
-	/// Human-readable text broadcast in each beacon (firmware limit: 100 UTF-8 bytes).
+	/// Human-readable text broadcast in each beacon (firmware limit: 60 UTF-8 bytes).
 	var broadcastMessage: String = ""
 	/// Channel the beacon *advertises* to listeners (offer_channel). Empty name = no offer.
 	var broadcastOfferChannelName: String = ""
@@ -94,6 +94,8 @@ final class MeshBeaconConfigEntity {
 	var broadcastOfferRegion: Int32 = 0
 	/// ModemPresets raw value advertised in offer_preset, or -1 when not offered (0 = LongFast).
 	var broadcastOfferPreset: Int32 = -1
+	/// Frequency slot advertised in offer_frequency_slot, 1-based; 0 = unset (derived).
+	var broadcastOfferFrequencySlot: Int32 = 0
 	// The broadcast-on fields and send-as-node were removed from the protobuf
 	// (TX destinations consolidated onto broadcast_targets). The columns below are
 	// retained only for schema compatibility; the editor reads them once to migrate
@@ -123,15 +125,18 @@ final class BroadcastTargetEntity {
 	var region: Int32 = 0
 	/// Index into the node's channel table to transmit this target on, or -1 when unset.
 	var channelIndex: Int32 = -1
+	/// Frequency slot to transmit this target on, 1-based; 0 = unset (derived).
+	var frequencySlot: Int32 = 0
 
 	var meshBeaconConfig: MeshBeaconConfigEntity?
 
 	init() {}
 
-	init(preset: Int32, region: Int32, channelIndex: Int32) {
+	init(preset: Int32, region: Int32, channelIndex: Int32, frequencySlot: Int32 = 0) {
 		self.preset = preset
 		self.region = region
 		self.channelIndex = channelIndex
+		self.frequencySlot = frequencySlot
 	}
 }
 
@@ -395,27 +400,6 @@ final class TAKConfigEntity {
 	var role: Int32 = 0
 	var team: Int32 = 0
 	var takConfigNode: NodeInfoEntity?
-
-	init() {}
-}
-
-@Model
-final class TrafficManagementConfigEntity {
-	var enabled: Bool = false
-	var positionDedupEnabled: Bool = false
-	var positionPrecisionBits: Int32 = 0
-	var positionMinIntervalSecs: Int32 = 0
-	var nodeinfoDirectResponse: Bool = false
-	var nodeinfoDirectResponseMaxHops: Int32 = 0
-	var rateLimitEnabled: Bool = false
-	var rateLimitWindowSecs: Int32 = 0
-	var rateLimitMaxPackets: Int32 = 0
-	var dropUnknownEnabled: Bool = false
-	var unknownPacketThreshold: Int32 = 0
-	var exhaustHopTelemetry: Bool = false
-	var exhaustHopPosition: Bool = false
-	var routerPreserveHops: Bool = false
-	var trafficManagementConfigNode: NodeInfoEntity?
 
 	init() {}
 }

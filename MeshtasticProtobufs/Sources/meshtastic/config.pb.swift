@@ -166,7 +166,7 @@ public struct Config: Sendable {
 
     ///
     /// Send our nodeinfo this often
-    /// Defaults to 900 Seconds (15 minutes)
+    /// Defaults to 10800 seconds (3 hours), minimum 3600 (1 hour)
     public var nodeInfoBroadcastSecs: UInt32 = 0
 
     ///
@@ -206,7 +206,7 @@ public struct Config: Sendable {
       public typealias RawValue = Int
 
       ///
-      /// Description: App connected or stand alone messaging device.
+      /// Description: App connected or standalone messaging device.
       /// Technical Details: Default Role
       case client // = 0
 
@@ -263,7 +263,7 @@ public struct Config: Sendable {
       case clientHidden // = 8
 
       ///
-      /// Description: Broadcasts location as message to default channel regularly for to assist with device recovery.
+      /// Description: Broadcasts location as message to default channel regularly to assist with device recovery.
       /// Technical Details: Used to automatically send a text message to the mesh
       ///    with the current position of the device on a frequent interval:
       ///    "I'm lost! Position: lat / long"
@@ -370,12 +370,12 @@ public struct Config: Sendable {
 
       ///
       /// Ignores observed messages from foreign meshes that are open or those which it cannot decrypt.
-      /// Only rebroadcasts message on the nodes local primary / secondary channels.
+      /// Only rebroadcasts messages on the node's local primary / secondary channels.
       case localOnly // = 2
 
       ///
       /// Ignores observed messages from foreign meshes like LOCAL_ONLY,
-      /// but takes it step further by also ignoring messages from nodenums not in the node's known list (NodeDB)
+      /// but takes it a step further by also ignoring messages from nodenums not in the node's known list (NodeDB)
       case knownOnly // = 3
 
       ///
@@ -510,7 +510,7 @@ public struct Config: Sendable {
 
     ///
     /// We should send our position this often (but only if it has changed significantly)
-    /// Defaults to 15 minutes
+    /// Defaults to 1 hour (12 hours on routers)
     public var positionBroadcastSecs: UInt32 = 0
 
     ///
@@ -531,7 +531,7 @@ public struct Config: Sendable {
 
     ///
     /// How often should we try to get GPS position (in seconds)
-    /// or zero for the default of once every 30 seconds
+    /// or zero for the default of once every 2 minutes (24 hours on routers)
     /// or a very large value (maxint) to update only once at boot.
     public var gpsUpdateInterval: UInt32 = 0
 
@@ -745,7 +745,7 @@ public struct Config: Sendable {
     // methods supported on all messages.
 
     ///
-    /// Description: Will sleep everything as much as possible, for the tracker and sensor role this will also include the lora radio.
+    /// Description: Will sleep everything as much as possible, for the Tracker and Sensor roles this also includes the LoRa radio.
     /// Don't use this setting if you want to use your device with the phone apps or are using a device without a user button.
     /// Technical Details: Works for ESP32 devices and NRF52 devices in the Sensor or Tracker roles
     public var isPowerSaving: Bool = false
@@ -976,7 +976,7 @@ public struct Config: Sendable {
 
     ///
     /// Number of seconds the screen stays on after pressing the user button or receiving a message
-    /// 0 for default of one minute MAXUINT for always on
+    /// 0 for default of ten minutes, MAXUINT for always on
     public var screenOnSecs: UInt32 = 0
 
     ///
@@ -1202,7 +1202,7 @@ public struct Config: Sendable {
       case inverted // = 2
 
       ///
-      /// TFT Full Color Displays (not implemented yet)
+      /// TFT Full Color Displays, which select the MUI
       case color // = 3
       case UNRECOGNIZED(Int)
 
@@ -1333,8 +1333,10 @@ public struct Config: Sendable {
     // methods supported on all messages.
 
     ///
-    /// When enabled, the `modem_preset` fields will be adhered to, else the `bandwidth`/`spread_factor`/`coding_rate`
-    /// will be taked from their respective manually defined fields
+    /// When enabled, the `modem_preset` sets the bandwidth and spread factor, and the
+    /// `bandwidth`/`spread_factor` fields are ignored. `coding_rate` is the exception:
+    /// see that field. When disabled, all three are taken from their respective
+    /// manually defined fields.
     public var usePreset: Bool {
       get {_storage._usePreset}
       set {_uniqueStorage()._usePreset = newValue}
@@ -1345,6 +1347,8 @@ public struct Config: Sendable {
     /// As a heuristic: If bandwidth is specified, do not use modem_config.
     /// Because protobufs take ZERO space when the value is zero this works out nicely.
     /// This value is replaced by bandwidth/spread_factor/coding_rate.
+    /// The one exception is `coding_rate`, which can raise the preset's coding rate
+    /// without moving off the preset; see that field.
     /// If you'd like to experiment with other options add them to MeshRadio.cpp in the device code.
     public var modemPreset: Config.LoRaConfig.ModemPreset {
       get {_storage._modemPreset}
@@ -1361,7 +1365,7 @@ public struct Config: Sendable {
     }
 
     ///
-    /// A number from 5 to 12, which the firmware clamps to that range.
+    /// A number from 5 to 12; firmware replaces a value outside that range with 11.
     /// Indicates number of chirps per symbol as 1<<spread_factor.
     /// RF95 radios additionally reject 5 and 6; that exclusion is per hardware
     /// and so is not expressible as a bound here.
@@ -1373,6 +1377,19 @@ public struct Config: Sendable {
     ///
     /// The denominator of the coding rate.
     /// ie for 4/5, the value is 5. 4/8 the value is 8.
+    ///
+    /// With `use_preset` disabled this is the coding rate, 4 through 8; firmware replaces a value outside that range with 5.
+    ///
+    /// With `use_preset` enabled, since 2.7.18 this raises the preset's coding rate
+    /// when it is 5 through 8 AND higher than the preset's. A lower value, a value
+    /// out of range, and 0 all leave the preset's coding rate in place, so 0 is how
+    /// a client says "use the preset's". Bandwidth and spread factor still come from
+    /// the preset, and the coding rate travels in the explicit LoRa header, so nodes
+    /// on the same preset still hear each other either way.
+    ///
+    /// No bound is stated here because the valid set differs between the two cases:
+    /// 5 through 8 with `use_preset` off, and 0 plus anything from above the preset's
+    /// own coding rate up to 8 with it on.
     public var codingRate: UInt32 {
       get {_storage._codingRate}
       set {_uniqueStorage()._codingRate = newValue}
@@ -1397,7 +1414,7 @@ public struct Config: Sendable {
     ///
     /// Maximum number of hops. This can't be greater than 7.
     /// Default of 3
-    /// Attempting to set a value > 7 results in the default
+    /// Values above 7 are treated as 7
     public var hopLimit: UInt32 {
       get {_storage._hopLimit}
       set {_uniqueStorage()._hopLimit = newValue}
@@ -1849,13 +1866,13 @@ public struct Config: Sendable {
 
       ///
       /// Short Range - Turbo
-      /// This is the fastest preset and the only one with 500kHz bandwidth.
+      /// This is the fastest preset, and one of three with 500kHz bandwidth.
       /// It is not legal to use in all regions due to this wider bandwidth.
       case shortTurbo // = 8
 
       ///
       /// Long Range - Turbo
-      /// This preset performs similarly to LongFast, but with 500Khz bandwidth.
+      /// This preset performs similarly to LongFast, but with 500kHz bandwidth.
       case longTurbo // = 9
 
       ///
@@ -2127,7 +2144,7 @@ public struct Config: Sendable {
     public var isManaged: Bool = false
 
     ///
-    /// Serial Console over the Stream API."
+    /// Serial Console over the Stream API.
     public var serialEnabled: Bool = false
 
     ///
