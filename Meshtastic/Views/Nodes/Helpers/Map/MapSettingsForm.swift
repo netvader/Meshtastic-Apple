@@ -49,7 +49,7 @@ struct MapSettingsForm: View {
 
 	var body: some View {
 
-		NavigationStack {
+		SheetNavigationStack {
 			Form {
 				Section(header: Text("Map Options")) {
 					Picker(selection: $mapLayer, label: Text("")) {
@@ -146,6 +146,9 @@ struct MapSettingsForm: View {
 					.onTapGesture {
 						self.pointsOfInterest.toggle()
 						UserDefaults.enableMapPointsOfInterest = self.pointsOfInterest
+					}
+					if meshMap {
+						WeatherRadarToggle()
 					}
 				}
 
@@ -249,6 +252,7 @@ struct MapSettingsForm: View {
 					} label: {
 						Label("Upload Map Data", systemImage: "doc.badge.plus")
 					}
+					.hostedWindowOnly()
 					.disabled(isProcessingUpload)
 
 					if isProcessingUpload {
@@ -274,7 +278,7 @@ struct MapSettingsForm: View {
 			) { result in
 				handleFileSelection(result)
 			}
-			.alert("Upload Error", isPresented: $showUploadError) {
+			.hostedAlert("Upload Error", isPresented: $showUploadError) {
 				Button("Ok") { }
 			} message: {
 				Text(uploadErrorMessage)
@@ -288,6 +292,10 @@ struct MapSettingsForm: View {
 		.presentationBackgroundInteraction(.enabled(upThrough: .medium))
 		.onChange(of: offlineMapManager.regions) {
 			resetTerraintogglesIfOrphaned()
+		}
+		// Here, not on the toggle: the toggle isn't in the form until this says it can be.
+		.task {
+			await WeatherRadarAvailability.shared.refresh()
 		}
 		.onAppear {
 			resetTerraintogglesIfOrphaned()
@@ -470,6 +478,29 @@ struct MapSettingsForm: View {
 		enabledOverlayConfigs: .constant(Set<UUID>())
 	)
 	.environmentObject(AccessoryManager.shared)
+}
+
+/// Turns on NOAA radar over the map, shown only where the radar has data.
+private struct WeatherRadarToggle: View {
+	@AppStorage("meshMapShowWeatherRadar") private var showWeatherRadar = false
+	@ObservedObject private var availability = WeatherRadarAvailability.shared
+
+	var body: some View {
+		if availability.isOffered {
+			Toggle(isOn: $showWeatherRadar) {
+				Label {
+					VStack(alignment: .leading) {
+						Text("Weather Radar")
+						Text("Precipitation from NOAA radar, lower 48 states only. Needs a network connection.")
+							.font(.caption)
+							.foregroundColor(.secondary)
+					}
+				} icon: {
+					Image(systemName: "cloud.rain")
+				}
+			}
+		}
+	}
 }
 
 /// Turns on the lines between nodes that hear each other directly.

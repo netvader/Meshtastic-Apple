@@ -47,6 +47,10 @@ struct MeshMapMK: View {
 	/// Contour generation + the shared TerrainStore behind hillshade and contours (spec 018).
 	@StateObject private var terrainContours = TerrainContourProvider()
 	@State private var hillshadeOverlay: HillshadeTileOverlay?
+	@AppStorage("meshMapShowWeatherRadar") private var showWeatherRadar = false
+	/// A new overlay each refresh period, so MapKit fetches the newest radar.
+	@State private var weatherRadarOverlay: WeatherRadarTileOverlay?
+	@ObservedObject private var weatherRadarAvailability = WeatherRadarAvailability.shared
 	/// Hide nodes whose latest position is reduced-precision (the ones drawn with a precision circle).
 	@AppStorage("enableMapPreciseLocationsOnly") private var preciseLocationsOnly = false
 	/// Map overlay configs
@@ -144,7 +148,7 @@ struct MeshMapMK: View {
 	@State var newWaypointCoord: CLLocationCoordinate2D?
 	@State var isMeshMap = true
 	@State private var showLegend = false
-	/// Site Planner coverage-estimate flow: the headless WebView+bridge runner and the form seed.
+	/// Site Planner coverage-estimate flow: the on-device runner and the form seed.
 	@StateObject private var coverageRunner = CoverageEstimateRunner()
 	@State private var coverageSeed: CoverageEstimateSeed?
 	@EnvironmentObject private var filters: NodeFilterParameters
@@ -308,7 +312,7 @@ struct MeshMapMK: View {
 			showsTraffic: showTraffic,
 			showsPointsOfInterest: showPointsOfInterest,
 			showsUserLocation: showUserLocation && isMapVisible,
-			controlsBottomInset: 72   // lift compass + pitch toggle above the bottom button bar
+			controlsBottomInset: 32   // clear of the map's Legal and Maps marks in the bottom-leading corner
 		)
 	}
 
@@ -496,9 +500,9 @@ struct MeshMapMK: View {
 					flyover.stop()
 				}
 			}
-				.sheet(item: $selectedNode) { selection in
+				.hostedSheet(item: $selectedNode) { selection in
 					if let node = getNodeInfo(id: selection.id, context: context) {
-						NavigationStack {
+						SheetNavigationStack {
 							NodeDetail(node: node, nodeNum: selection.id, showMapLink: false)
 								.trackScreen(.nodeDetail)
 								.sheetCloseButton()
@@ -509,7 +513,7 @@ struct MeshMapMK: View {
 						#endif
 					}
 				}
-				.sheet(item: $colocatedStack, onDismiss: {
+				.hostedSheet(item: $colocatedStack, onDismiss: {
 					// Open the chosen item only after the picker has fully dismissed, so the two
 					// sheets don't fight over presentation.
 					if let selection = pendingColocatedSelection {
@@ -517,7 +521,7 @@ struct MeshMapMK: View {
 						open(selection)
 					}
 				}) { stack in
-					NavigationStack {
+					SheetNavigationStack {
 						List(stack.items) { item in
 							Button {
 								pendingColocatedSelection = item
@@ -548,7 +552,7 @@ struct MeshMapMK: View {
 					.presentationDragIndicator(.visible)
 					#endif
 				}
-				.sheet(item: $selectedWaypoint) { selection in
+				.hostedSheet(item: $selectedWaypoint) { selection in
 					WaypointForm(waypoint: selection)
 						.environmentObject(accessoryManager)
 						.trackScreen(.waypoint)
@@ -557,7 +561,7 @@ struct MeshMapMK: View {
 						.presentationDragIndicator(.visible)
 						#endif
 				}
-				.sheet(item: $editingWaypoint) { selection in
+				.hostedSheet(item: $editingWaypoint) { selection in
 					WaypointForm(waypoint: selection, editMode: true)
 						.environmentObject(accessoryManager)
 						.trackScreen(.waypoint)
@@ -567,7 +571,7 @@ struct MeshMapMK: View {
 						#endif
 				}
 
-				.sheet(isPresented: $editingSettings) {
+				.hostedSheet(isPresented: $editingSettings) {
 					MapSettingsForm(traffic: $showTraffic, pointsOfInterest: $showPointsOfInterest, mapLayer: $selectedMapLayer, meshMap: $isMeshMap, enabledOverlayConfigs: $enabledOverlayConfigs)
 				}
 				.onChange(of: router.mapState) {
@@ -592,13 +596,13 @@ struct MeshMapMK: View {
 						return
 					}
 				}
-				.sheet(isPresented: $editingFilters) {
+				.hostedSheet(isPresented: $editingFilters) {
 					NodeListFilter(
 						filterTitle: "Map Filters",
 						filters: filters
 					)
 				}
-				.sheet(isPresented: $showLegend) {
+				.hostedSheet(isPresented: $showLegend) {
 					MapLegend(isMeshMap: true)
 						.trackScreen(.mapLegend)
 						.presentationDetents([.large])
@@ -608,7 +612,7 @@ struct MeshMapMK: View {
 						#endif
 						.presentationBackgroundInteraction(.enabled(upThrough: .medium))
 				}
-				.sheet(item: $coverageSeed) { seed in
+				.hostedSheet(item: $coverageSeed) { seed in
 					CoverageEstimateForm(seed: seed, runner: coverageRunner)
 						.trackScreen(.coverageEstimate)
 						.presentationDetents([.large])
@@ -616,9 +620,8 @@ struct MeshMapMK: View {
 						.presentationDragIndicator(.visible)
 						#endif
 				}
-				.safeAreaInset(edge: .bottom, alignment: .trailing) {
-					HStack(spacing: 12) {
-						Spacer()
+				.overlay(alignment: .bottomTrailing) {
+					MapControlBar {
 						#if os(visionOS)
 						if supportsMultipleWindows {
 							Button(action: {
@@ -628,7 +631,6 @@ struct MeshMapMK: View {
 							}
 							.accessibilityLabel(String(localized: "Open 3D map", comment: "VoiceOver label for the button that opens the spatial map volume"))
 							.accessibilityHint(String(localized: "Shows the mesh on a terrain model in a volume.", comment: "VoiceOver hint for the button that opens the spatial map volume"))
-							.glassButtonStyle()
 						}
 						#endif
 						Button(action: {
@@ -638,7 +640,6 @@ struct MeshMapMK: View {
 						}
 						.accessibilityLabel(String(localized: "Estimate coverage", comment: "VoiceOver label for the coverage estimate button"))
 						.accessibilityHint(String(localized: "Runs a Site Planner coverage estimate and adds it to the map.", comment: "VoiceOver hint for the coverage estimate button"))
-						.glassButtonStyle()
 						Button(action: {
 							withAnimation {
 								editingFilters = !editingFilters
@@ -648,7 +649,6 @@ struct MeshMapMK: View {
 						}
 						.accessibilityLabel(editingFilters ? String(localized: "Hide node filters", comment: "VoiceOver label to hide map node filters") : String(localized: "Show node filters", comment: "VoiceOver label to show map node filters"))
 						.accessibilityHint(editingFilters ? String(localized: "Hides the node filter options.", comment: "VoiceOver hint to hide map node filters") : String(localized: "Shows the node filter options.", comment: "VoiceOver hint to show map node filters"))
-						.glassButtonStyle()
 						Button(action: {
 							withAnimation {
 								showLegend = !showLegend
@@ -658,7 +658,6 @@ struct MeshMapMK: View {
 						}
 						.accessibilityLabel(showLegend ? String(localized: "Hide map legend", comment: "VoiceOver label to hide the map legend") : String(localized: "Show map legend", comment: "VoiceOver label to show the map legend"))
 						.accessibilityHint(showLegend ? String(localized: "Hides the map legend.", comment: "VoiceOver hint to hide the map legend") : String(localized: "Shows the map legend.", comment: "VoiceOver hint to show the map legend"))
-						.glassButtonStyle()
 						Button(action: {
 							withAnimation {
 								editingSettings = !editingSettings
@@ -668,11 +667,10 @@ struct MeshMapMK: View {
 						}
 						.accessibilityLabel(editingSettings ? String(localized: "Hide map settings", comment: "VoiceOver label to hide the map settings panel") : String(localized: "Show map settings", comment: "VoiceOver label to show the map settings panel"))
 						.accessibilityHint(editingSettings ? String(localized: "Hides the map settings panel.", comment: "VoiceOver hint to hide the map settings panel") : String(localized: "Shows the map settings panel.", comment: "VoiceOver hint to show the map settings panel"))
-						.glassButtonStyle()
 					}
-					.controlSize(.regular)
-					.padding(.horizontal, 12)
-					.padding(.vertical, 8)
+					.padding(.trailing, 12)
+					// Level with the round buttons on the leading side.
+					.padding(.bottom, 32)
 				}
 	}
 
@@ -814,6 +812,22 @@ struct MeshMapMK: View {
 			}
 			.onChange(of: showHillshade) {
 				rebuildHillshadeOverlay()
+			}
+			.task(id: isMapVisible && showWeatherRadar) {
+				// Fetch the radar again each refresh period while it's on screen.
+				guard isMapVisible, showWeatherRadar else {
+					weatherRadarOverlay = nil
+					return
+				}
+				while !Task.isCancelled {
+					// Checked each time, so the radar follows the phone in and out of coverage.
+					await weatherRadarAvailability.refresh()
+					weatherRadarOverlay = weatherRadarAvailability.isOffered
+						? WeatherRadarTileOverlay(refreshPeriod: WeatherRadar.refreshPeriod())
+						: nil
+					let next = Double(WeatherRadar.refreshPeriod() + 1) * WeatherRadar.refreshInterval
+					try? await Task.sleep(for: .seconds(max(1, next - Date.now.timeIntervalSince1970)))
+				}
 			}
 			.onChange(of: showContours) {
 				updateContoursIfNeeded()
@@ -1297,6 +1311,15 @@ struct MeshMapMK: View {
 									return result
 								}
 
+								/// NOAA radar over the lower 48, while it's on, offered, and there's a network to fetch it.
+								private var weatherRadarOverlays: [ClusterMapOverlay] {
+									guard showWeatherRadar, offlineMapConnectivity.isNetworkAvailable, let weatherRadarOverlay else { return [] }
+									// On the hybrid map MapKit doesn't draw an above-roads tile overlay that goes past
+									// zoom 12, so there the radar goes over the labels.
+									let level: MKOverlayLevel = selectedMapLayer == .hybrid ? .aboveLabels : .aboveRoads
+									return [ClusterMapOverlay(id: "weather-radar-\(ObjectIdentifier(weatherRadarOverlay).hashValue)", overlay: weatherRadarOverlay, style: ClusterMapOverlayStyle(level: level))]
+								}
+
 								/// Re-point the terrain store at downloaded terrain, then refresh dependents.
 								private func refreshTerrainSources() {
 									let sources = offlineMapManager.terrainSources()
@@ -1341,6 +1364,7 @@ struct MeshMapMK: View {
 									result += geoJSONOverlays
 									result += geofenceOverlays
 									result += terrainOverlays
+									result += weatherRadarOverlays
 									return result
 								}
 
@@ -1389,9 +1413,28 @@ struct MeshMapMK: View {
 										if !geoJSONDecorations.isEmpty { geoJSONDecorations = [] }
 										return
 									}
+									// A layer can be tens of megabytes, so it loads off the main thread and the
+									// overlays appear when it's ready. A newer change of layers outranks an older one.
+									let configs = enabledOverlayConfigs
+									Task { @MainActor in
+										let content = await GeoJSONOverlayManager.shared.loadLayerContent(configs)
+										guard lastGeoJSONKey == key else { return }
+										applyGeoJSONContent(content)
+									}
+								}
+
+								private func applyGeoJSONContent(_ content: GeoJSONLayerContent) {
 									var overlays: [ClusterMapOverlay] = []
 									var decorations: [ClusterMapDecoration] = []
-									for styled in GeoJSONOverlayManager.shared.loadStyledFeaturesForConfigs(enabledOverlayConfigs) {
+									// Imported images go on first, and under the labels, so shapes and nodes stay readable.
+									for ground in content.grounds {
+										overlays.append(ClusterMapOverlay(
+											id: "geojson-ground-\(ground.id)",
+											overlay: ground.overlay,
+											style: ClusterMapOverlayStyle(level: .aboveRoads)
+										))
+									}
+									for styled in content.features {
 										let stroke = styled.strokeStyle
 										let style = ClusterMapOverlayStyle(
 											strokeUIColor: UIColor(styled.strokeColor),
@@ -1405,16 +1448,30 @@ struct MeshMapMK: View {
 										} else {
 											// Point yields one marker; MultiPoint yields one per sub-coordinate.
 											let radius = styled.feature.markerRadius
+											// A KMZ point that names an icon draws it, at the size the file asked for.
+											let icon = styled.feature.importedIconPath.flatMap { content.icons[$0] }
+											let iconSide = 32 * CGFloat(min(max(styled.feature.importedIconScale, 0.5), 3))
 											for (index, coordinate) in styled.feature.markerCoordinates.enumerated() {
-												decorations.append(ClusterMapDecoration(
-													id: "geojson-pt-\(styled.id)-\(index)",
-													coordinate: coordinate,
-													content: AnyView(
+												let content: AnyView
+												if let icon {
+													content = AnyView(
+														Image(uiImage: icon)
+															.resizable()
+															.scaledToFit()
+															.frame(width: iconSide, height: iconSide)
+													)
+												} else {
+													content = AnyView(
 														Circle()
 															.fill(styled.fillColor)
 															.overlay(Circle().stroke(styled.strokeColor, style: stroke))
 															.frame(width: radius * 2, height: radius * 2)
 													)
+												}
+												decorations.append(ClusterMapDecoration(
+													id: "geojson-pt-\(styled.id)-\(index)",
+													coordinate: coordinate,
+													content: content
 												))
 											}
 										}
@@ -1787,9 +1844,11 @@ struct MeshMapMK: View {
 		}
 	}
 
-	/// Center/zoom the camera to fit the selected trace route's nodes. Drives the MKMapView directly
-	/// (not the `visibleRegion` binding) so the framing doesn't kick off a region-binding feedback
-	/// loop that re-renders `body` repeatedly (which pegs the main thread on Mac Catalyst).
+	/// Center/zoom the camera to fit the selected trace route's nodes, with the one-shot camera
+	/// command (not the `visibleRegion` binding, which doesn't move the map and would kick off a
+	/// region-binding feedback loop that re-renders `body` repeatedly). The command also replaces an
+	/// initial framing still waiting to be applied, which would otherwise take the camera back off
+	/// the route when the route is asked for as the map appears.
 	private func frameTraceRoute() {
 		guard let route = selectedTraceRoute else { return }
 		let coords = route.forwardCoordinates + route.backCoordinates
@@ -1803,11 +1862,10 @@ struct MeshMapMK: View {
 			longitudeDelta: max((maxLon - minLon) * 1.4, 0.02)
 		)
 		let region = MKCoordinateRegion(center: center, span: span)
-		if let mapView = flyover.mapView {
-			mapView.setRegion(region, animated: false)
-		} else {
-			visibleRegion = region
-		}
+		// The route's framing stands in for the initial one, so the positions coming in don't re-frame.
+		didInitialFrame = true
+		visibleRegion = region
+		cameraCommand = ClusterMapCameraCommand(id: UUID(), region: region)
 	}
 
 /// Build the offline basemap as native MKOverlays (earth fill + water/park fills + arterial roads)

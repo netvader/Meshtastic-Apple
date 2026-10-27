@@ -9,6 +9,11 @@ class Router: ObservableObject {
 	@Published
 	var selectedTab: NavigationState.Tab
 
+	/// Why a map file handed to the app (Open In, AirDrop, Files) could not be imported, for the
+	/// main window to show. Nil when there is nothing to say.
+	@Published
+	var mapImportError: String?
+
 	/// Transient deep-link *command* for the Messages tab (carries the channelId/userNum payload).
 	/// Set by `route(url:)` / restoration and consumed exactly once by the Messages view, which
 	/// resolves it into a selected conversation and then clears it. Kept separate from
@@ -303,7 +308,7 @@ class Router: ObservableObject {
 		}
 	}
 
-	/// Imports a GeoJSON map overlay handed to the app as a file URL — e.g. via "Open in Meshtastic"
+	/// Imports a GeoJSON, KML or KMZ map overlay handed to the app as a file URL — e.g. via "Open in Meshtastic"
 	/// from the Share Sheet, the Files app, or a drag-and-drop — reusing the same pipeline as the
 	/// in-app file picker. Called from `onOpenURL` for file URLs, which is a distinct path from
 	/// `route(url:)` (that only handles `meshtastic://` scheme URLs).
@@ -319,7 +324,8 @@ class Router: ObservableObject {
 				let metadata = try await MapDataManager.shared.processUploadedFile(from: url)
 				Logger.services.info("🗺️ [App] Imported '\(metadata.originalName, privacy: .public)' (\(metadata.overlayCount, privacy: .public) overlays) via Open In.")
 			} catch {
-				Logger.services.error("🗺️ [App] Open In GeoJSON import failed: \(error.localizedDescription, privacy: .public)")
+				Logger.services.error("🗺️ [App] Open In map import failed: \(error.localizedDescription, privacy: .public)")
+				mapImportError = error.localizedDescription
 			}
 		}
 	}
@@ -378,6 +384,9 @@ class Router: ObservableObject {
 /// from those methods.
 final class SceneRouters: @unchecked Sendable {
 	private var routers: [UUID: Router] = [:]
+	/// Stacks that aren't a router's: the page stack of a panel in the immersive space, whose
+	/// pages hold the same model objects a detail view does.
+	private var stacks: [UUID: @MainActor () -> Void] = [:]
 
 	@MainActor
 	@discardableResult
@@ -387,15 +396,28 @@ final class SceneRouters: @unchecked Sendable {
 		return id
 	}
 
+	/// Registers a stack to pop with the routers' stacks.
+	@MainActor
+	@discardableResult
+	func register(stack popAll: @escaping @MainActor () -> Void) -> UUID {
+		let id = UUID()
+		stacks[id] = popAll
+		return id
+	}
+
 	@MainActor
 	func unregister(_ id: UUID) {
 		routers.removeValue(forKey: id)
+		stacks.removeValue(forKey: id)
 	}
 
 	@MainActor
 	func popAllStacks() {
 		for router in Array(routers.values) {
 			router.popAllStacks()
+		}
+		for popAll in Array(stacks.values) {
+			popAll()
 		}
 	}
 }

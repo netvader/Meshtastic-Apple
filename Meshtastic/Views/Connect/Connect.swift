@@ -30,6 +30,9 @@ struct Connect: View {
 	@State var isUnsetRegion = false
 	@State var showSecurityVersionNag = false
 	@ObservedObject private var liveActivities = MeshLiveActivityManager.shared
+#if os(iOS) && !targetEnvironment(macCatalyst)
+	@ObservedObject private var widgetInventory = WidgetInventory.shared
+#endif
 	@ObservedObject var manualConnections = ManualConnectionList.shared
 	@ObservedObject private var nymeaProvisioning = NymeaProvisioningManager.shared
 	@Environment(\.scenePhase) private var scenePhase
@@ -39,7 +42,7 @@ struct Connect: View {
 	@State private var isSwitchingRadio = false
 	@State private var showingShutdownConfirm = false
 	@State private var showingShareContactQR = false
-	@State private var showingLiveActivitySheet = false
+	@State private var showingWidgetsSheet = false
 	/// The connected node as a plain protobuf value, copied when the share menu item is tapped.
 	/// The sheet outlives the row it was opened from, and reading a faulted @Model after a
 	/// reconnect traps, so nothing SwiftData-backed is held here.
@@ -165,8 +168,13 @@ struct Connect: View {
 												.font(.callout).foregroundColor(Color.gray)
 										}
 										if let presetName {
-											Text("Preset").font(.callout)+Text(": \(presetName)")
-												.font(.callout).foregroundColor(Color.gray)
+											// The preset names are a known, short set — the longest `ModemPresets`
+											// renders is "Long Range - Moderate" — so they get one line and shrink
+											// to fit rather than wrapping the row in this narrow column.
+											(Text("Preset").font(.callout)+Text(": \(presetName)")
+												.font(.callout).foregroundColor(Color.gray))
+												.lineLimit(1)
+												.minimumScaleFactor(0.6)
 										}
 										if accessoryManager.firmwareEdition.isEvent {
 											// Event branding lives here, in the Connect device box — never in the
@@ -406,13 +414,15 @@ struct Connect: View {
 						.textCase(nil)
 					}
 
-					// Shown while one runs even when disconnected, so it can always be stopped.
-					if liveActivities.currentMode != nil
-						|| (accessoryManager.isConnected && !lockdown.isBlockingSession && liveActivities.isAvailable) {
-						LiveActivitySection(liveActivities: liveActivities) {
-							showingLiveActivitySheet = true
+#if os(iOS) && !targetEnvironment(macCatalyst)
+					// Widgets don't need a radio; a running Live Activity keeps the row even
+					// under lockdown, so it can always be stopped.
+					if liveActivities.currentMode != nil || !lockdown.isBlockingSession {
+						WidgetsSection(liveActivities: liveActivities, inventory: widgetInventory) {
+							showingWidgetsSheet = true
 						}
 					}
+#endif
 					
 					if !(accessoryManager.isConnected || accessoryManager .isConnecting) {
 						Group {
@@ -531,7 +541,7 @@ struct Connect: View {
 			// Attached to the list (not the connected-device subtree, which unmounts
 			// on disconnect) so the confirmation survives a connection state change between
 			// the long-press and the user tapping "Shutdown Node?".
-			.confirmationDialog(
+			.hostedConfirmation(
 				"Are you sure?",
 				isPresented: $showingShutdownConfirm,
 				titleVisibility: .visible
@@ -558,7 +568,7 @@ struct Connect: View {
 			}
 			// Attached here for the same reason as the dialog above: the connected-device
 			// row unmounts on disconnect, which would tear the sheet down with it.
-			.sheet(isPresented: $showingShareContactQR) {
+			.hostedSheet(isPresented: $showingShareContactQR) {
 				if let shareContactNode {
 					// This menu only ever shows on the connected radio, which is verified by
 					// definition.
@@ -567,11 +577,13 @@ struct Connect: View {
 			}
 			// On the list, not its row: the list redraws with every packet, and a sheet
 			// attached to a row it rebuilds loses its choices mid-edit.
-			.sheet(isPresented: $showingLiveActivitySheet) {
-				LiveActivitySheet(liveActivities: liveActivities)
+#if os(iOS) && !targetEnvironment(macCatalyst)
+			.hostedSheet(isPresented: $showingWidgetsSheet) {
+				WidgetsSheet(liveActivities: liveActivities, inventory: widgetInventory)
 			}
+#endif
 		}
-		.sheet(isPresented: $showSecurityVersionNag) {
+		.hostedSheet(isPresented: $showSecurityVersionNag) {
 			SecurityVersionNag(minimumSecureVersion: accessoryManager.securityVersion, version: accessoryManager.activeConnection?.device.firmwareVersion ?? "?.?.?")
 				.trackScreen(.firmwareSecurityWarning)
 				.presentationDetents([.large])
@@ -584,7 +596,7 @@ struct Connect: View {
 			}
 			refreshConnectedNodeState()
 		}
-		.sheet(item: $pendingNymeaDevice, onDismiss: {
+		.hostedSheet(item: $pendingNymeaDevice, onDismiss: {
 			updateNymeaDiscovery()
 		}) { device in
 			WifiProvisioningView(preselectedDevice: device)
@@ -858,7 +870,7 @@ struct ManualConnectionMenu: View {
 			}
 		} label: {
 			Label("Manual", systemImage: "plus")
-		}.alert("Manual connection string", isPresented: $showAlert, presenting: selectedTransport) { selectedTransport in
+		}.hostedFormAlert("Manual connection string", isPresented: $showAlert, presenting: selectedTransport) { selectedTransport in
 			// This continues to be quick and dirty. A better system is needed.
 			TextField("Enter hostname[:port]", text: $connectionString)
 				.keyboardType(.URL)

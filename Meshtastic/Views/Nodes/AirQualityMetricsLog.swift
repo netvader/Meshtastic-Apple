@@ -44,7 +44,7 @@ struct AirQualityMetricsLog: View {
 					if chartData.count > 0 {
 						GroupBox(label: Label("\(totalReadings) Readings Total", systemImage: "chart.xyaxis.line")) {
 							Chart(seriesList.visible) { series in
-								ForEach(chartData) { dataPoint in
+								ForEach(chartData, id: \.persistentModelID) { dataPoint in
 									series.body(dataPoint, inChartRange: chartRange)
 								}
 							}
@@ -108,7 +108,7 @@ struct AirQualityMetricsLog: View {
 					.controlSize(buttonSize)
 					.padding(.bottom)
 					.padding(.leading)
-					.sheet(isPresented: self.$isEditingColumnConfiguration) {
+					.hostedSheet(isPresented: self.$isEditingColumnConfiguration) {
 						MetricsColumnDetail(columnList: columnList, seriesList: seriesList)
 					}
 					Button(role: .destructive) {
@@ -121,7 +121,7 @@ struct AirQualityMetricsLog: View {
 					.buttonBorderShape(.capsule)
 					.controlSize(buttonSize)
 					.padding(.bottom)
-					.confirmationDialog(
+					.hostedConfirmation(
 						"Are you sure?",
 						isPresented: $isPresentingClearLogConfirm,
 						titleVisibility: .visible
@@ -147,6 +147,7 @@ struct AirQualityMetricsLog: View {
 						Label("Save", systemImage: "square.and.arrow.down")
 							.imageScale(imageScale)
 					}
+					.hostedWindowOnly()
 					.buttonStyle(.bordered)
 					.buttonBorderShape(.capsule)
 					.controlSize(buttonSize)

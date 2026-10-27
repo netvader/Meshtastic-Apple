@@ -30,6 +30,19 @@ struct OfflineMapsList: View {
 				.disabled(manager.isBusy)
 			}
 
+			Section {
+				Button {
+					showingImporter = true
+				} label: {
+					Label("Import MBTiles or PMTiles File", systemImage: "square.and.arrow.down")
+				}
+				.disabled(manager.isBusy)
+			} header: {
+				Text("Import")
+			} footer: {
+				Text("Add a map file you already have. It's copied into the app and added to this list.")
+			}
+
 			if manager.regions.isEmpty {
 				Section("Downloaded Maps") {
 					Text("No offline maps yet. Download an area to use the map without a connection.")
@@ -77,6 +90,7 @@ struct OfflineMapsList: View {
 				} label: {
 					Label("Import offline map", systemImage: "square.and.arrow.down")
 				}
+				.hostedWindowOnly()
 			}
 		}
 		.onAppear {
@@ -100,7 +114,7 @@ struct OfflineMapsList: View {
 				importError = error.localizedDescription
 			}
 		}
-		.alert("Couldn’t Import Offline Map", isPresented: Binding(
+		.hostedAlert("Couldn’t Import Offline Map", isPresented: Binding(
 			get: { importError != nil },
 			set: { if !$0 { importError = nil } }
 		)) {

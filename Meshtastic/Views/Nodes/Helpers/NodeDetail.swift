@@ -140,10 +140,10 @@ struct NodeDetail: View {
 					.frame(height: 0) // Ensure it has no height
 					.id("topOfList")
 					nodeDetailList
-						.sheet(isPresented: $showingCompassSheet) {
+						.hostedSheet(isPresented: $showingCompassSheet) {
 							CompassView(waypointLocation: latestPosition?.nodeCoordinate ?? nil, waypointLongName: currentUser?.displayLongName, waypointShortName: currentUser?.shortName, color: Color(UIColor(hex: UInt32(nodeNum))), showsCloseButton: true)
 						}
-						.sheet(isPresented: $showingShareContactQR) {
+						.hostedSheet(isPresented: $showingShareContactQR) {
 							ShareContactQRDialog(
 								manuallyVerified: nodeNum == accessoryManager.activeDeviceNum,
 								node: shareContactNode
@@ -272,6 +272,24 @@ struct NodeDetail: View {
 				}
 			}
 			.accessibilityElement(children: .combine)
+			// When a local display name hides the node's real broadcast long name, show the real
+			// one too so it can still be seen without clearing the display name (#2604).
+			if let longName = currentUser?.longNameHiddenByDisplayName {
+				HStack {
+					Label {
+						Text("Long Name")
+					} icon: {
+						Image(systemName: "person.wave.2")
+							.symbolRenderingMode(.hierarchical)
+					}
+					Spacer()
+					Text(longName.addingVariationSelectors)
+						.foregroundStyle(.secondary)
+						.lineLimit(1)
+						.textSelection(.enabled)
+				}
+				.accessibilityElement(children: .combine)
+			}
 			HStack {
 				Label {
 					Text("Node Number")
@@ -890,6 +908,7 @@ struct NodeDetail: View {
 						}
 					#endif
 						NavigateToButton(node: node)
+							.hostedWindowOnly()
 						#if os(visionOS)
 						ShowInSpatialMapButton(nodeNum: nodeNum)
 						#endif
@@ -956,7 +975,7 @@ struct NodeDetail: View {
 						showingShutdownConfirm = true
 					} label: {
 						Label("Power Off", systemImage: "power")
-					}.confirmationDialog(
+					}.hostedConfirmation(
 						"Are you sure?",
 						isPresented: $showingShutdownConfirm
 					) {
@@ -983,7 +1002,7 @@ struct NodeDetail: View {
 						"Reboot",
 						systemImage: "arrow.triangle.2.circlepath"
 					)
-				}.confirmationDialog(
+				}.hostedConfirmation(
 					"Are you sure?",
 					isPresented: $showingRebootConfirm
 				) {

@@ -64,7 +64,7 @@ struct MQTTTopicFinder: View {
 	}
 
 	var body: some View {
-		NavigationStack {
+		SheetNavigationStack {
 			List {
 				statusSection
 				// Without a region there is no ladder and nothing is sampled; only the status row
@@ -223,7 +223,7 @@ struct MQTTTopicFinder: View {
 		} header: {
 			Text("Custom topic")
 		} footer: {
-			Text("Up to 31 ASCII characters, no leading or trailing slash, no + or #.")
+			Text("Up to 31 bytes, no leading or trailing slash, no + or #.")
 		}
 	}
 
